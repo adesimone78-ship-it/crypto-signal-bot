@@ -212,6 +212,15 @@ app.get('/', function(req, res) {
   res.send('Bot attivo ✅');
 });
 
+app.get('/test', async function(req, res) {
+  try {
+    var result = await sendTelegram('🔧 Test connessione bot — tutto ok!');
+    res.json({ ok: true, token: TELEGRAM_TOKEN ? 'presente' : 'MANCANTE', chatId: CHAT_ID });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 var PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
   console.log('Server in ascolto sulla porta ' + PORT);
