@@ -234,12 +234,16 @@ app.post('/webhook', async (req, res) => {
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
 // === AVVIO ===
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server in ascolto sulla porta ${PORT}`);
   setInterval(checkPositions, 5 * 60 * 1000);
-  scheduleDaily();
-  scheduleWeekly();
-  scheduleMonthly();
-  scheduleYearly();
+  
+  // Avvia i resoconti solo dopo 10 minuti dall'avvio
+  // per evitare invii multipli durante i redeploy
+  setTimeout(() => {
+    scheduleDaily();
+    scheduleWeekly();
+    scheduleMonthly();
+    scheduleYearly();
+  }, 10 * 60 * 1000);
 });
