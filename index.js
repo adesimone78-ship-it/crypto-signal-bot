@@ -36,11 +36,14 @@ async function getPrice(asset) {
 
 async function sendTelegram(text) {
   try {
-    await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
+    var response = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: CHAT_ID, text: text, parse_mode: 'HTML' })
     });
+    var data = await response.json();
+    console.log('Telegram response:', JSON.stringify(data));
+    return data;
   } catch (e) {
     console.error('Errore Telegram:', e.message);
   }
@@ -215,11 +218,12 @@ app.get('/', function(req, res) {
 app.get('/test', async function(req, res) {
   try {
     var result = await sendTelegram('🔧 Test connessione bot — tutto ok!');
-    res.json({ ok: true, token: TELEGRAM_TOKEN ? 'presente' : 'MANCANTE', chatId: CHAT_ID });
+    res.json({ ok: true, token: TELEGRAM_TOKEN ? 'presente' : 'MANCANTE', chatId: CHAT_ID, telegramResponse: result });
   } catch(e) {
     res.json({ ok: false, error: e.message });
   }
 });
+
 
 var PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
