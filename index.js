@@ -136,70 +136,61 @@ async function checkPositions() {
   }
 }
 
-// === RESOCONTO GIORNALIERO (ogni giorno alle 20:00) ===
+// === RESOCONTI PERIODICI ===
 function scheduleDaily() {
   const now = new Date();
   const next = new Date();
   next.setHours(20, 0, 0, 0);
   if (now >= next) next.setDate(next.getDate() + 1);
-  const delay = next - now;
-
   setTimeout(async () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const filtered = closedPositions.filter(p => new Date(p.closedAt) >= today);
     await sendTelegram(buildReport('GIORNALIERO', filtered));
     scheduleDaily();
-  }, delay);
+  }, next - new Date());
 }
 
-// === RESOCONTO SETTIMANALE (ogni lunedì alle 09:00) ===
 function scheduleWeekly() {
   const now = new Date();
   const next = new Date();
   const daysUntilMonday = (8 - now.getDay()) % 7 || 7;
   next.setDate(now.getDate() + daysUntilMonday);
   next.setHours(9, 0, 0, 0);
-  const delay = next - now;
-
   setTimeout(async () => {
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
     const filtered = closedPositions.filter(p => new Date(p.closedAt) >= weekAgo);
     await sendTelegram(buildReport('SETTIMANALE', filtered));
     scheduleWeekly();
-  }, delay);
+  }, next - new Date());
 }
 
-// === RESOCONTO MENSILE (primo del mese alle 09:00) ===
 function scheduleMonthly() {
   const now = new Date();
   const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 9, 0, 0);
-  const delay = next - now;
-
   setTimeout(async () => {
     const monthAgo = new Date();
     monthAgo.setMonth(monthAgo.getMonth() - 1);
     const filtered = closedPositions.filter(p => new Date(p.closedAt) >= monthAgo);
     await sendTelegram(buildReport('MENSILE', filtered));
     scheduleMonthly();
-  }, delay);
+  }, next - new Date());
 }
 
-// === RESOCONTO ANNUALE (1 gennaio alle 09:00) ===
 function scheduleYearly() {
   const now = new Date();
   const next = new Date(now.getFullYear() + 1, 0, 1, 9, 0, 0);
-  const delay = next - now;
-
   setTimeout(async () => {
     const yearAgo = new Date();
     yearAgo.setFullYear(yearAgo.getFullYear() - 1);
     const filtered = closedPositions.filter(p => new Date(p.closedAt) >= yearAgo);
     await sendTelegram(buildReport('ANNUALE', filtered));
     scheduleYearly();
-  }, delay);
+  }, next - new Date());
 }
+
+
 
 // === WEBHOOK SEGNALE IN INGRESSO ===
 app.post('/webhook', async (req, res) => {
@@ -237,13 +228,8 @@ app.get('/', (req, res) => res.send('Bot attivo ✅'));
 app.listen(PORT, () => {
   console.log(`Server in ascolto sulla porta ${PORT}`);
   setInterval(checkPositions, 5 * 60 * 1000);
-  
-  // Avvia i resoconti solo dopo 10 minuti dall'avvio
-  // per evitare invii multipli durante i redeploy
-  setTimeout(() => {
-    scheduleDaily();
-    scheduleWeekly();
-    scheduleMonthly();
-    scheduleYearly();
-  }, 10 * 60 * 1000);
+  scheduleDaily();
+  scheduleWeekly();
+  scheduleMonthly();
+  scheduleYearly();
 });
