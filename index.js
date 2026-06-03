@@ -205,6 +205,26 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
+app.get('/report/day', async (req, res) => {
+  await sendTelegram(buildReport('GIORNALIERO', getFiltered('day')));
+  res.json({ ok: true });
+});
+
+app.get('/report/week', async (req, res) => {
+  await sendTelegram(buildReport('SETTIMANALE', getFiltered('week')));
+  res.json({ ok: true });
+});
+
+app.get('/report/month', async (req, res) => {
+  await sendTelegram(buildReport('MENSILE', getFiltered('month')));
+  res.json({ ok: true });
+});
+
+app.get('/report/year', async (req, res) => {
+  await sendTelegram(buildReport('ANNUALE', getFiltered('year')));
+  res.json({ ok: true });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Server avviato porta ' + PORT);
