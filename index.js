@@ -229,8 +229,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Server avviato porta ' + PORT);
   setInterval(checkPositions, 10 * 60 * 1000);
-  scheduleDaily();
-  scheduleWeekly();
-  scheduleMonthly();
-  scheduleYearly();
 });
