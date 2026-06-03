@@ -201,9 +201,35 @@ app.post('/telegram', async (req, res) => {
 
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
-const PORT = process.env.PORT || 3000;
+let lastUpdateId = 0;
 
-app.listen(PORT, () => {
+async function pollTelegram() {
+  try {
+    const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=0');
+    const data = await res.json();
+    if (!data.ok || !data.result.length) return;
+    for (const update of data.result) {
+      lastUpdateId = update.update_id;
+      const message = update.message || update.channel_post;
+      if (!message || !message.text) continue;
+      const text = message.text.trim().toLowerCase();
+      let report = null;
+      if (text === '/giorno') report = buildReport('GIORNALIERO', getFiltered('day'));
+      else if (text === '/settimana') report = buildReport('SETTIMANALE', getFiltered('week'));
+      else if (text === '/mese') report = buildReport('MENSILE', getFiltered('month'));
+      else if (text === '/anno') report = buildReport('ANNUALE', getFiltered('year'));
+      if (report) await sendTelegram(report);
+    }
+  } catch (e) {
+    console.error('Errore polling:', e.message);
+  }
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
+  await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
+  console.log('Webhook rimosso, polling attivo');
   setInterval(checkPositions, 10 * 60 * 1000);
+  setInterval(pollTelegram, 3000);
 });
