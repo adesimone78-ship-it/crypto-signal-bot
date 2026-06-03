@@ -203,8 +203,6 @@ app.post('/telegram', async (req, res) => {
 
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
-let lastUpdateId = 0;
-
 async function pollTelegram() {
   try {
     const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=0');
