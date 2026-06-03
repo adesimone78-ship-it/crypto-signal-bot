@@ -11,7 +11,6 @@ const ORDER_EUR = 1201.94;
 
 let positions = [];
 let closedPositions = [];
-let startedAt = Date.now();
 
 function calcLevels(entry, direction) {
   const slDist = entry * 0.018;
@@ -36,13 +35,13 @@ async function getPrice(asset) {
 
 async function sendTelegram(text) {
   try {
-    var response = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
+    const response = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: CHAT_ID, text: text, parse_mode: 'HTML' })
     });
-    var data = await response.json();
-    console.log('Telegram response:', JSON.stringify(data));
+    const data = await response.json();
+    console.log('Telegram:', JSON.stringify(data));
     return data;
   } catch (e) {
     console.error('Errore Telegram:', e.message);
@@ -81,11 +80,11 @@ function buildReport(label, filtered) {
   if (filtered.length === 0) {
     return '📊 <b>RESOCONTO ' + label + '</b>\n━━━━━━━━━━━━━━━━━━\nNessuna posizione chiusa nel periodo.';
   }
-  const wins = filtered.filter(function(p) { return p.result === 'WIN'; }).length;
-  const losses = filtered.filter(function(p) { return p.result === 'LOSS'; }).length;
-  const totalPnl = filtered.reduce(function(a, p) { return a + p.pnlEur; }, 0);
-  const grossWin = filtered.filter(function(p) { return p.result === 'WIN'; }).reduce(function(a, p) { return a + p.pnlEur; }, 0);
-  const grossLoss = filtered.filter(function(p) { return p.result === 'LOSS'; }).reduce(function(a, p) { return a + p.pnlEur; }, 0);
+  const wins = filtered.filter(p => p.result === 'WIN').length;
+  const losses = filtered.filter(p => p.result === 'LOSS').length;
+  const totalPnl = filtered.reduce((a, p) => a + p.pnlEur, 0);
+  const grossWin = filtered.filter(p => p.result === 'WIN').reduce((a, p) => a + p.pnlEur, 0);
+  const grossLoss = filtered.filter(p => p.result === 'LOSS').reduce((a, p) => a + p.pnlEur, 0);
   const winRate = ((wins / filtered.length) * 100).toFixed(1);
   const pf = grossLoss !== 0 ? (grossWin / Math.abs(grossLoss)).toFixed(2) : '∞';
   const pnlStr = totalPnl >= 0 ? '+€' + totalPnl.toFixed(2) : '-€' + Math.abs(totalPnl).toFixed(2);
@@ -102,12 +101,13 @@ function buildReport(label, filtered) {
 }
 
 async function checkPositions() {
-  for (var i = positions.length - 1; i >= 0; i--) {
-    var pos = positions[i];
+  if (positions.length === 0) return;
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const pos = positions[i];
     try {
-      var price = await getPrice(pos.asset);
-      var result = null;
-      var closePrice = price;
+      const price = await getPrice(pos.asset);
+      let result = null;
+      let closePrice = price;
       if (pos.direction === 'LONG') {
         if (price >= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
         else if (price <= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
@@ -116,12 +116,11 @@ async function checkPositions() {
         else if (price >= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
       }
       if (result) {
-        var priceDiff = result === 'WIN'
+        const priceDiff = result === 'WIN'
           ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
           : (pos.direction === 'LONG' ? pos.sl - pos.entry : pos.entry - pos.sl);
-        var pnlEur = +(priceDiff / pos.entry * ORDER_EUR).toFixed(2);
-        var closed = Object.assign({}, pos, { result: result, closePrice: closePrice, pnlEur: pnlEur, closedAt: new Date() });
-        closedPositions.push(closed);
+        const pnlEur = +(priceDiff / pos.entry * ORDER_EUR).toFixed(2);
+        closedPositions.push(Object.assign({}, pos, { result, closePrice, pnlEur, closedAt: new Date() }));
         positions.splice(i, 1);
         await sendTelegram(buildCloseMessage(pos, result, closePrice, pnlEur));
       }
@@ -132,77 +131,70 @@ async function checkPositions() {
 }
 
 function getFiltered(type) {
-  var now = new Date();
-  var from = new Date();
-  if (type === 'day') { from.setHours(0, 0, 0, 0); }
-  else if (type === 'week') { from.setDate(now.getDate() - 7); }
-  else if (type === 'month') { from.setMonth(now.getMonth() - 1); }
-  else if (type === 'year') { from.setFullYear(now.getFullYear() - 1); }
-  return closedPositions.filter(function(p) { return new Date(p.closedAt) >= from; });
+  const now = new Date();
+  const from = new Date();
+  if (type === 'day') from.setHours(0, 0, 0, 0);
+  else if (type === 'week') from.setDate(now.getDate() - 7);
+  else if (type === 'month') from.setMonth(now.getMonth() - 1);
+  else if (type === 'year') from.setFullYear(now.getFullYear() - 1);
+  return closedPositions.filter(p => new Date(p.closedAt) >= from);
 }
 
-function msUntil(h, m, daysAhead) {
-  var now = new Date();
-  var target = new Date();
-  target.setDate(now.getDate() + (daysAhead || 0));
-  target.setHours(h, m, 0, 0);
-  if (target <= now) target.setDate(target.getDate() + 1);
-  return target - now;
+function scheduleAt(targetDate, callback) {
+  const delay = targetDate - new Date();
+  if (delay > 0) setTimeout(callback, delay);
 }
 
 function scheduleDaily() {
-  setTimeout(function() {
-    sendTelegram(buildReport('GIORNALIERO', getFiltered('day')));
+  const next = new Date();
+  next.setHours(20, 0, 0, 0);
+  if (next <= new Date()) next.setDate(next.getDate() + 1);
+  scheduleAt(next, async () => {
+    await sendTelegram(buildReport('GIORNALIERO', getFiltered('day')));
     scheduleDaily();
-  }, msUntil(20, 0));
+  });
 }
 
 function scheduleWeekly() {
-  var now = new Date();
-  var daysUntilMonday = (8 - now.getDay()) % 7 || 7;
-  setTimeout(function() {
-    sendTelegram(buildReport('SETTIMANALE', getFiltered('week')));
+  const now = new Date();
+  const next = new Date();
+  const daysUntilMonday = (8 - now.getDay()) % 7 || 7;
+  next.setDate(now.getDate() + daysUntilMonday);
+  next.setHours(9, 0, 0, 0);
+  scheduleAt(next, async () => {
+    await sendTelegram(buildReport('SETTIMANALE', getFiltered('week')));
     scheduleWeekly();
-  }, msUntil(9, 0, daysUntilMonday - 1));
+  });
 }
 
 function scheduleMonthly() {
-  var now = new Date();
-  var next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 9, 0, 0);
-  setTimeout(function() {
-    sendTelegram(buildReport('MENSILE', getFiltered('month')));
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 9, 0, 0);
+  scheduleAt(next, async () => {
+    await sendTelegram(buildReport('MENSILE', getFiltered('month')));
     scheduleMonthly();
-  }, next - now);
+  });
 }
 
 function scheduleYearly() {
-  var now = new Date();
-  var next = new Date(now.getFullYear() + 1, 0, 1, 9, 0, 0);
-  setTimeout(function() {
-    sendTelegram(buildReport('ANNUALE', getFiltered('year')));
+  const now = new Date();
+  const next = new Date(now.getFullYear() + 1, 0, 1, 9, 0, 0);
+  scheduleAt(next, async () => {
+    await sendTelegram(buildReport('ANNUALE', getFiltered('year')));
     scheduleYearly();
-  }, next - now);
+  });
 }
 
-app.post('/webhook', async function(req, res) {
+app.post('/webhook', async (req, res) => {
   try {
-    var asset = req.body.asset;
-    var direction = req.body.direction;
-    var entry = req.body.entry;
+    const { asset, direction, entry } = req.body;
     if (!asset || !direction || !entry) {
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
-    var entryNum = parseFloat(entry);
-    var dir = direction.toUpperCase();
-    var lv = calcLevels(entryNum, dir);
-    positions.push({
-      asset: asset.toUpperCase(),
-      direction: dir,
-      entry: entryNum,
-      sl: lv.sl,
-      tp: lv.tp,
-      openedAt: new Date()
-    });
+    const entryNum = parseFloat(entry);
+    const dir = direction.toUpperCase();
+    const lv = calcLevels(entryNum, dir);
+    positions.push({ asset: asset.toUpperCase(), direction: dir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
     await sendTelegram(buildEntryMessage(asset.toUpperCase(), dir, entryNum, lv));
     res.json({ ok: true });
   } catch (e) {
@@ -211,24 +203,12 @@ app.post('/webhook', async function(req, res) {
   }
 });
 
-app.get('/', function(req, res) {
-  res.send('Bot attivo ✅');
-});
+app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
-app.get('/test', async function(req, res) {
-  try {
-    var result = await sendTelegram('🔧 Test connessione bot — tutto ok!');
-    res.json({ ok: true, token: TELEGRAM_TOKEN ? 'presente' : 'MANCANTE', chatId: CHAT_ID, telegramResponse: result });
-  } catch(e) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-
-var PORT = process.env.PORT || 3000;
-app.listen(PORT, function() {
-  console.log('Server in ascolto sulla porta ' + PORT);
-  setInterval(checkPositions, 5 * 60 * 1000);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('Server avviato porta ' + PORT);
+  setInterval(checkPositions, 10 * 60 * 1000);
   scheduleDaily();
   scheduleWeekly();
   scheduleMonthly();
