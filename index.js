@@ -100,6 +100,16 @@ function buildReport(label, filtered) {
     '━━━━━━━━━━━━━━━━━━';
 }
 
+function getFiltered(type) {
+  const now = new Date();
+  const from = new Date();
+  if (type === 'day') from.setHours(0, 0, 0, 0);
+  else if (type === 'week') from.setDate(now.getDate() - 7);
+  else if (type === 'month') from.setMonth(now.getMonth() - 1);
+  else if (type === 'year') from.setFullYear(now.getFullYear() - 1);
+  return closedPositions.filter(p => new Date(p.closedAt) >= from);
+}
+
 async function checkPositions() {
   if (positions.length === 0) return;
   for (let i = positions.length - 1; i >= 0; i--) {
@@ -130,61 +140,6 @@ async function checkPositions() {
   }
 }
 
-function getFiltered(type) {
-  const now = new Date();
-  const from = new Date();
-  if (type === 'day') from.setHours(0, 0, 0, 0);
-  else if (type === 'week') from.setDate(now.getDate() - 7);
-  else if (type === 'month') from.setMonth(now.getMonth() - 1);
-  else if (type === 'year') from.setFullYear(now.getFullYear() - 1);
-  return closedPositions.filter(p => new Date(p.closedAt) >= from);
-}
-
-function scheduleAt(targetDate, callback) {
-  const delay = targetDate - new Date();
-  if (delay > 0) setTimeout(callback, delay);
-}
-
-function scheduleDaily() {
-  const next = new Date();
-  next.setHours(20, 0, 0, 0);
-  if (next <= new Date()) next.setDate(next.getDate() + 1);
-  scheduleAt(next, async () => {
-    await sendTelegram(buildReport('GIORNALIERO', getFiltered('day')));
-    scheduleDaily();
-  });
-}
-
-function scheduleWeekly() {
-  const now = new Date();
-  const next = new Date();
-  const daysUntilMonday = (8 - now.getDay()) % 7 || 7;
-  next.setDate(now.getDate() + daysUntilMonday);
-  next.setHours(9, 0, 0, 0);
-  scheduleAt(next, async () => {
-    await sendTelegram(buildReport('SETTIMANALE', getFiltered('week')));
-    scheduleWeekly();
-  });
-}
-
-function scheduleMonthly() {
-  const now = new Date();
-  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 9, 0, 0);
-  scheduleAt(next, async () => {
-    await sendTelegram(buildReport('MENSILE', getFiltered('month')));
-    scheduleMonthly();
-  });
-}
-
-function scheduleYearly() {
-  const now = new Date();
-  const next = new Date(now.getFullYear() + 1, 0, 1, 9, 0, 0);
-  scheduleAt(next, async () => {
-    await sendTelegram(buildReport('ANNUALE', getFiltered('year')));
-    scheduleYearly();
-  });
-}
-
 app.post('/webhook', async (req, res) => {
   try {
     const { asset, direction, entry } = req.body;
@@ -202,8 +157,6 @@ app.post('/webhook', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
 app.get('/report/day', async (req, res) => {
   await sendTelegram(buildReport('GIORNALIERO', getFiltered('day')));
@@ -224,6 +177,8 @@ app.get('/report/year', async (req, res) => {
   await sendTelegram(buildReport('ANNUALE', getFiltered('year')));
   res.json({ ok: true });
 });
+
+app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
