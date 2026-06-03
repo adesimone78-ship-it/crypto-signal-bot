@@ -210,7 +210,9 @@ async function pollTelegram() {
     if (!data.ok || !data.result.length) return;
     for (const update of data.result) {
       lastUpdateId = update.update_id;
-      const message = update.message || update.channel_post;
+      const message = update.channel_post || update.message;
+if (update.message && update.channel_post) continue;
+
       if (!message || !message.text) continue;
       const text = message.text.trim().toLowerCase();
       let report = null;
