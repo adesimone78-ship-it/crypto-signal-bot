@@ -11,6 +11,8 @@ const ORDER_EUR = 1201.94;
 
 let positions = [];
 let closedPositions = [];
+let lastUpdateId = 0;
+let processedIds = new Set();
 
 function calcLevels(entry, direction) {
   const slDist = entry * 0.018;
@@ -210,10 +212,14 @@ async function pollTelegram() {
     if (!data.ok || !data.result.length) return;
 
     
-  for (const update of data.result) {
+for (const update of data.result) {
       lastUpdateId = update.update_id;
+      if (processedIds.has(update.update_id)) continue;
+      processedIds.add(update.update_id);
       const message = update.channel_post || update.message;
       if (!message || !message.text) continue;
+
+    
       if (message.via_bot) continue;
       if (message.date < Math.floor(Date.now() / 1000) - 10) continue;
 
