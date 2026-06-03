@@ -178,9 +178,31 @@ app.get('/report/year', async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/telegram', async (req, res) => {
+  try {
+    const message = req.body.message;
+    if (!message || !message.text) return res.json({ ok: true });
+    
+    const text = message.text.trim().toLowerCase();
+    let report = null;
+
+    if (text === '/giorno') report = buildReport('GIORNALIERO', getFiltered('day'));
+    else if (text === '/settimana') report = buildReport('SETTIMANALE', getFiltered('week'));
+    else if (text === '/mese') report = buildReport('MENSILE', getFiltered('month'));
+    else if (text === '/anno') report = buildReport('ANNUALE', getFiltered('year'));
+
+    if (report) await sendTelegram(report);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Errore comando:', e.message);
+    res.json({ ok: true });
+  }
+});
+
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log('Server avviato porta ' + PORT);
   setInterval(checkPositions, 10 * 60 * 1000);
