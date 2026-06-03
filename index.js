@@ -208,10 +208,16 @@ async function pollTelegram() {
     const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=0');
     const data = await res.json();
     if (!data.ok || !data.result.length) return;
-    for (const update of data.result) {
+
+    
+  for (const update of data.result) {
       lastUpdateId = update.update_id;
       const message = update.channel_post || update.message;
-if (update.message && update.channel_post) continue;
+      if (!message || !message.text) continue;
+      if (message.via_bot) continue;
+      if (message.date < Math.floor(Date.now() / 1000) - 10) continue;
+
+      
 
       if (!message || !message.text) continue;
       const text = message.text.trim().toLowerCase();
