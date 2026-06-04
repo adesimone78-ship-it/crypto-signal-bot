@@ -21,12 +21,6 @@ const marginMap = {
   NAS100:            { margin: 1307.45,  order: 26149.02  },
 };
 
-let positions = [];
-let closedPositions = [];
-let lastUpdateId = 0;
-let processedIds = new Set();
-
-// === ATR per asset ===
 const atrMap = {
   BTC: 0.018, ETH: 0.018, SOL: 0.022,
   XAU: 0.004, XAGUSD: 0.006,
@@ -35,61 +29,59 @@ const atrMap = {
   DEFAULT: 0.018
 };
 
-// === Suffisso corretto per asset ===
+let positions = [];
+let closedPositions = [];
+let lastUpdateId = 0;
+let processedIds = new Set();
+
 function getAssetSuffix(asset) {
-const fiat = ['XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD', 'FOREXCOM:NAS100'];
+  const fiat = ['XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD', 'FOREXCOM:NAS100'];
   return fiat.includes(asset) ? 'USD' : 'USDT';
 }
 
-// === Timestamp italiano ===
 function nowIT() {
   return new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-// === Calcolo livelli TP/SL ===
 function calcLevels(entry, direction, asset) {
   const atrPct = atrMap[asset] || atrMap.DEFAULT;
+  const { margin, order } = marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
   const slDist = entry * atrPct;
   const tpDist = slDist * 3;
   const sl = direction === 'LONG' ? +(entry - slDist).toFixed(2) : +(entry + slDist).toFixed(2);
   const tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
   return {
-    sl, tp,
-    slEur: +(slDist / entry * ORDER_EUR).toFixed(2),
-    tpEur: +(tpDist / entry * ORDER_EUR).toFixed(2),
+    sl, tp, margin, order,
+    slEur: +(slDist / entry * order).toFixed(2),
+    tpEur: +(tpDist / entry * order).toFixed(2),
     slPct: +(slDist / entry * 100).toFixed(2),
     tpPct: +(tpDist / entry * 100).toFixed(2)
   };
 }
 
-// === Prezzo attuale — supporta tutti gli asset ===
 async function getPrice(asset) {
   try {
     const cryptoMap = {
       BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana',
       BNB: 'binancecoin', XRP: 'ripple'
     };
-
     if (cryptoMap[asset]) {
       const id = cryptoMap[asset];
       const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + id + '&vs_currencies=usd');
       const data = await res.json();
       return data[id].usd;
     }
-
-    // Per XAU, XAGUSD, NAS100, USOIL usa Yahoo Finance via API pubblica
-const yahooMap = {
-  XAU: 'GC=F', XAGUSD: 'SI=F',
-  NAS100: 'NQ=F', US100: 'NQ=F', USOIL: 'CL=F'
-};
-
+    const yahooMap = {
+      XAU: 'GC=F', XAGUSD: 'SI=F',
+      NAS100: 'NQ=F', US100: 'NQ=F',
+      'FOREXCOM:NAS100': 'NQ=F', USOIL: 'CL=F'
+    };
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
       const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d');
       const data = await res.json();
       return data.chart.result[0].meta.regularMarketPrice;
     }
-
     console.warn('Asset non supportato per price check:', asset);
     return null;
   } catch (e) {
@@ -98,7 +90,6 @@ const yahooMap = {
   }
 }
 
-// === Invia messaggio Telegram ===
 async function sendTelegram(text) {
   try {
     const response = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
@@ -114,7 +105,6 @@ async function sendTelegram(text) {
   }
 }
 
-// === Messaggio ingresso ===
 function buildEntryMessage(asset, direction, entry, lv) {
   const emoji = direction === 'LONG' ? '📈' : '📉';
   const arrow = direction === 'LONG' ? '▲' : '▼';
@@ -127,12 +117,11 @@ function buildEntryMessage(asset, direction, entry, lv) {
     '🛑 Stop Loss:   $' + lv.sl.toLocaleString('it-IT') + '  (-' + lv.slPct + '% / -€' + lv.slEur + ')\n' +
     '🎯 Take Profit: $' + lv.tp.toLocaleString('it-IT') + '  (+' + lv.tpPct + '% / +€' + lv.tpEur + ')\n' +
     '⚖️ R:R → 3 : 1\n' +
-    '💼 Margine: €' + MARGIN + ' | Ordine: €' + ORDER_EUR + '\n' +
+    '💼 Margine: €' + lv.margin.toLocaleString('it-IT') + ' | Ordine: €' + lv.order.toLocaleString('it-IT') + '\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
     '⚠️ Non è consulenza finanziaria.';
 }
 
-// === Messaggio chiusura ===
 function buildCloseMessage(pos, result, closePrice, pnlEur) {
   const emoji = result === 'WIN' ? '✅' : '❌';
   const pnlStr = pnlEur >= 0 ? '+€' + pnlEur.toFixed(2) : '-€' + Math.abs(pnlEur).toFixed(2);
@@ -152,7 +141,6 @@ function buildCloseMessage(pos, result, closePrice, pnlEur) {
     '━━━━━━━━━━━━━━━━━━';
 }
 
-// === Resoconto ===
 function buildReport(label, filtered) {
   if (filtered.length === 0) {
     return '📊 <b>RESOCONTO ' + label + '</b>\n━━━━━━━━━━━━━━━━━━\nNessuna posizione chiusa nel periodo.';
@@ -177,7 +165,6 @@ function buildReport(label, filtered) {
     '━━━━━━━━━━━━━━━━━━';
 }
 
-// === Posizioni aperte ===
 function buildOpenPositions() {
   if (positions.length === 0) {
     return '📋 <b>POSIZIONI APERTE</b>\n━━━━━━━━━━━━━━━━━━\nNessuna posizione aperta.';
@@ -209,7 +196,6 @@ function getFiltered(type) {
   return closedPositions.filter(p => new Date(p.closedAt) >= from);
 }
 
-// === Check posizioni ogni 3 minuti ===
 async function checkPositions() {
   if (positions.length === 0) return;
   for (let i = positions.length - 1; i >= 0; i--) {
@@ -230,8 +216,8 @@ async function checkPositions() {
         const priceDiff = result === 'WIN'
           ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
           : (pos.direction === 'LONG' ? pos.sl - pos.entry : pos.entry - pos.sl);
-const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
-const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
+        const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
+        const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
         closedPositions.push(Object.assign({}, pos, { result, closePrice, pnlEur, closedAt: new Date() }));
         positions.splice(i, 1);
         await sendTelegram(buildCloseMessage(pos, result, closePrice, pnlEur));
@@ -242,7 +228,6 @@ const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
   }
 }
 
-// === Polling Telegram ===
 async function pollTelegram() {
   try {
     const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=0');
@@ -271,7 +256,6 @@ async function pollTelegram() {
   }
 }
 
-// === Webhook segnale ===
 app.post('/webhook', async (req, res) => {
   try {
     const { asset, direction, entry } = req.body;
@@ -281,14 +265,11 @@ app.post('/webhook', async (req, res) => {
     const assetUp = asset.toUpperCase();
     const dir = direction.toUpperCase();
     const entryNum = parseFloat(entry);
-
-    // Blocca doppio segnale stesso asset
     const existing = positions.find(p => p.asset === assetUp);
     if (existing) {
       console.log('Segnale ignorato — posizione già aperta su:', assetUp);
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
-
     const lv = calcLevels(entryNum, dir, assetUp);
     positions.push({ asset: assetUp, direction: dir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
     await sendTelegram(buildEntryMessage(assetUp, dir, entryNum, lv));
