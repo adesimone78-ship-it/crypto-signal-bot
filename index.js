@@ -208,7 +208,7 @@ async function pollTelegram() {
     const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=0');
     const data = await res.json();
     if (!data.ok || !data.result.length) return;
-
+for (const u of data.result) console.log('UPDATE:', JSON.stringify(u));
     
 for (const update of data.result) {
       lastUpdateId = update.update_id;
