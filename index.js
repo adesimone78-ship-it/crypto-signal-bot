@@ -214,8 +214,8 @@ for (const update of data.result) {
       lastUpdateId = update.update_id;
       if (processedIds.has(update.update_id)) continue;
       processedIds.add(update.update_id);
-      if (update.channel_post) continue;
-      const message = update.message;
+    const message = update.channel_post;
+if (!message) continue;
       if (!message || !message.text) continue;
       if (message.via_bot) continue;
 
