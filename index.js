@@ -19,12 +19,13 @@ const atrMap = {
   BTC: 0.018, ETH: 0.018, SOL: 0.022,
   XAU: 0.004, XAGUSD: 0.006,
   NAS100: 0.0035, US100: 0.0035, USOIL: 0.008,
+  'FOREXCOM:NAS100': 0.0035,
   DEFAULT: 0.018
 };
 
 // === Suffisso corretto per asset ===
 function getAssetSuffix(asset) {
- const fiat = ['XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD'];
+const fiat = ['XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD', 'FOREXCOM:NAS100'];
   return fiat.includes(asset) ? 'USD' : 'USDT';
 }
 
