@@ -159,7 +159,10 @@ async function pollTelegram() {
       else if (text === '/settimana') report = buildReport('SETTIMANALE', getFiltered('week'));
       else if (text === '/mese') report = buildReport('MENSILE', getFiltered('month'));
       else if (text === '/anno') report = buildReport('ANNUALE', getFiltered('year'));
-      if (report) {
+   if (report) {
+        const key = 'report_' + update.update_id;
+        if (processedIds.has(key)) continue;
+        processedIds.add(key);
         console.log('Invio report:', text, 'update_id:', update.update_id);
         await sendTelegram(report);
       }
