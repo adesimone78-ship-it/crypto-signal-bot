@@ -6,8 +6,20 @@ app.use(express.json());
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-const MARGIN = 600.97;
-const ORDER_EUR = 1201.94;
+const MARGIN_DEFAULT = 274.10;
+const ORDER_DEFAULT = 548.20;
+
+const marginMap = {
+  BTC:               { margin: 274.10,   order: 548.20    },
+  ETH:               { margin: 381.94,   order: 763.88    },
+  SOL:               { margin: 274.10,   order: 548.20    },
+  XAU:               { margin: 970.97,   order: 19419.43  },
+  XAGUSD:            { margin: 1594.81,  order: 15948.15  },
+  USOIL:             { margin: 400.28,   order: 4002.80   },
+  'FOREXCOM:NAS100': { margin: 1307.45,  order: 26149.02  },
+  US100:             { margin: 1307.45,  order: 26149.02  },
+  NAS100:            { margin: 1307.45,  order: 26149.02  },
+};
 
 let positions = [];
 let closedPositions = [];
