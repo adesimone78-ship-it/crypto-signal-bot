@@ -18,13 +18,13 @@ let processedIds = new Set();
 const atrMap = {
   BTC: 0.018, ETH: 0.018, SOL: 0.022,
   XAU: 0.004, XAGUSD: 0.006,
-  NAS100: 0.0035, USOIL: 0.008,
+  NAS100: 0.0035, US100: 0.0035, USOIL: 0.008,
   DEFAULT: 0.018
 };
 
 // === Suffisso corretto per asset ===
 function getAssetSuffix(asset) {
-  const fiat = ['XAU', 'XAGUSD', 'NAS100', 'USOIL', 'EURUSD', 'GBPUSD'];
+ const fiat = ['XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD'];
   return fiat.includes(asset) ? 'USD' : 'USDT';
 }
 
@@ -65,10 +65,10 @@ async function getPrice(asset) {
     }
 
     // Per XAU, XAGUSD, NAS100, USOIL usa Yahoo Finance via API pubblica
-    const yahooMap = {
-      XAU: 'GC=F', XAGUSD: 'SI=F',
-      NAS100: 'NQ=F', USOIL: 'CL=F'
-    };
+const yahooMap = {
+  XAU: 'GC=F', XAGUSD: 'SI=F',
+  NAS100: 'NQ=F', US100: 'NQ=F', USOIL: 'CL=F'
+};
 
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
