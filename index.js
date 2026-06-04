@@ -15,7 +15,7 @@ let lastUpdateId = 0;
 let processedIds = new Set();
 
 function calcLevels(entry, direction, asset) {
-  const atrMap = { BTC: 0.018, ETH: 0.018, SOL: 0.022, XAU: 0.004, DEFAULT: 0.018 };
+  const atrMap = { BTC: 0.018, ETH: 0.018, SOL: 0.022, XAU: 0.004, XAGUSD: 0.006, NAS100: 0.0035, USOIL: 0.008, DEFAULT: 0.018 };
   const atrPct = atrMap[asset] || atrMap.DEFAULT;
   const slDist = entry * atrPct;
   const tpDist = slDist * 3;
