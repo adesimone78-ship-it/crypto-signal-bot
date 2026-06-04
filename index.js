@@ -226,7 +226,10 @@ if (!message) continue;
       else if (text === '/settimana') report = buildReport('SETTIMANALE', getFiltered('week'));
       else if (text === '/mese') report = buildReport('MENSILE', getFiltered('month'));
       else if (text === '/anno') report = buildReport('ANNUALE', getFiltered('year'));
-      if (report) await sendTelegram(report);
+      if (report) {
+  console.log('Invio report per comando:', text, 'update_id:', update.update_id);
+  await sendTelegram(report);
+}
     }
   } catch (e) {
     console.error('Errore polling:', e.message);
