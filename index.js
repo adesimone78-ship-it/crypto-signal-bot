@@ -230,7 +230,8 @@ async function checkPositions() {
         const priceDiff = result === 'WIN'
           ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
           : (pos.direction === 'LONG' ? pos.sl - pos.entry : pos.entry - pos.sl);
-        const pnlEur = +(priceDiff / pos.entry * ORDER_EUR).toFixed(2);
+const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
+const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
         closedPositions.push(Object.assign({}, pos, { result, closePrice, pnlEur, closedAt: new Date() }));
         positions.splice(i, 1);
         await sendTelegram(buildCloseMessage(pos, result, closePrice, pnlEur));
