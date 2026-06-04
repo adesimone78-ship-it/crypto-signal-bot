@@ -14,8 +14,10 @@ let closedPositions = [];
 let lastUpdateId = 0;
 let processedIds = new Set();
 
-function calcLevels(entry, direction) {
-  const slDist = entry * 0.018;
+function calcLevels(entry, direction, asset) {
+  const atrMap = { BTC: 0.018, ETH: 0.018, SOL: 0.022, XAU: 0.004, DEFAULT: 0.018 };
+  const atrPct = atrMap[asset] || atrMap.DEFAULT;
+  const slDist = entry * atrPct;
   const tpDist = slDist * 3;
   const sl = direction === 'LONG' ? +(entry - slDist).toFixed(2) : +(entry + slDist).toFixed(2);
   const tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
@@ -180,7 +182,7 @@ app.post('/webhook', async (req, res) => {
     }
     const entryNum = parseFloat(entry);
     const dir = direction.toUpperCase();
-    const lv = calcLevels(entryNum, dir);
+    const lv = calcLevels(entryNum, dir, asset.toUpperCase());
     positions.push({ asset: asset.toUpperCase(), direction: dir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
     await sendTelegram(buildEntryMessage(asset.toUpperCase(), dir, entryNum, lv));
     res.json({ ok: true });
