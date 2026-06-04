@@ -214,16 +214,12 @@ for (const update of data.result) {
       lastUpdateId = update.update_id;
       if (processedIds.has(update.update_id)) continue;
       processedIds.add(update.update_id);
-      const message = update.channel_post || update.message;
+      if (update.channel_post) continue;
+      const message = update.message;
       if (!message || !message.text) continue;
-
-    
       if (message.via_bot) continue;
-      if (message.date < Math.floor(Date.now() / 1000) - 10) continue;
 
-      
-
-      if (!message || !message.text) continue;
+  
       const text = message.text.trim().toLowerCase();
       let report = null;
       if (text === '/giorno') report = buildReport('GIORNALIERO', getFiltered('day'));
