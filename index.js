@@ -11,7 +11,9 @@ const ORDER_DEFAULT = 548.20;
 
 const marginMap = {
   BTC:                           { margin: 274.10,   order: 548.20    },
+  'CMCMARKETS:BTCUSD':           { margin: 268.94,   order: 537.87    },
   ETH:                           { margin: 381.94,   order: 763.88    },
+  'CMCMARKETS:ETHUSD':           { margin: 36.12,    order: 72.25     },
   SOL:                           { margin: 274.10,   order: 548.20    },
   XAU:                           { margin: 970.97,   order: 19419.43  },
   'CMCMARKETS:GOLDQ2026':        { margin: 970.97,   order: 19419.43  },
@@ -19,17 +21,20 @@ const marginMap = {
   'CMCMARKETS:SILVERN2026':      { margin: 1594.81,  order: 15948.15  },
   SILVERN2026:                   { margin: 1594.81,  order: 15948.15  },
   USOIL:                         { margin: 400.28,   order: 4002.80   },
-  'FOREXCOM:NAS100':             { margin: 1307.45,  order: 26149.02  },
-  US100:                         { margin: 1307.45,  order: 26149.02  },
-  NAS100:                        { margin: 1307.45,  order: 26149.02  },
+  'EASYMARKETS:OILUSD':          { margin: 399.86,   order: 3998.59   },
+  'FOREXCOM:NAS100':             { margin: 1294.68,  order: 25893.55  },
+  US100:                         { margin: 1294.68,  order: 25893.55  },
+  NAS100:                        { margin: 1294.68,  order: 25893.55  },
 };
 
 const atrMap = {
-  BTC: 0.018, ETH: 0.018, SOL: 0.022,
+  BTC: 0.018, 'CMCMARKETS:BTCUSD': 0.018,
+  ETH: 0.018, 'CMCMARKETS:ETHUSD': 0.018,
+  SOL: 0.022,
   XAU: 0.004, 'CMCMARKETS:GOLDQ2026': 0.004,
   XAGUSD: 0.006, SILVERN2026: 0.006, 'CMCMARKETS:SILVERN2026': 0.006,
   NAS100: 0.0035, US100: 0.0035, 'FOREXCOM:NAS100': 0.0035,
-  USOIL: 0.008,
+  USOIL: 0.008, 'EASYMARKETS:OILUSD': 0.008,
   DEFAULT: 0.018
 };
 
@@ -42,7 +47,7 @@ function getAssetSuffix(asset) {
   const fiat = [
     'XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD',
     'FOREXCOM:NAS100', 'CMCMARKETS:SILVERN2026', 'SILVERN2026',
-    'CMCMARKETS:GOLDQ2026'
+    'CMCMARKETS:GOLDQ2026', 'EASYMARKETS:OILUSD'
   ];
   return fiat.includes(asset) ? 'USD' : 'USDT';
 }
@@ -70,8 +75,9 @@ function calcLevels(entry, direction, asset) {
 async function getPrice(asset) {
   try {
     const cryptoMap = {
-      BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana',
-      BNB: 'binancecoin', XRP: 'ripple'
+      BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
+      ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
+      SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
     };
     if (cryptoMap[asset]) {
       const id = cryptoMap[asset];
@@ -83,7 +89,7 @@ async function getPrice(asset) {
       XAU: 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
       XAGUSD: 'SI=F', SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
       NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
-      USOIL: 'CL=F'
+      USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F'
     };
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
