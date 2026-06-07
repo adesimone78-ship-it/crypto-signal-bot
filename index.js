@@ -56,6 +56,7 @@ function getAssetSuffix(asset) {
   ];
   if (fiat.includes(asset)) return 'USD';
   if (asset === 'NASDAQ:TSLA' || asset === 'TSLA') return 'USD';
+  if (asset === 'NASDAQ:NVDA' || asset === 'NVDA') return 'USD';
   return 'USDT';
 }
 
@@ -144,8 +145,9 @@ async function sendTelegram(text) {
 }
 
 function buildEntryMessage(asset, direction, entry, lv) {
-  const emoji = direction === 'LONG' ? '📈' : '📉';
-  const arrow = direction === 'LONG' ? '▲' : '▼';
+  const isLong = direction === 'LONG' || direction === 'BUY';
+  const emoji = isLong ? '📈' : '📉';
+  const arrow = isLong ? '▲' : '▼';
   const suffix = getAssetSuffix(asset);
   return '🤖 <b>SIGNAL BOT — ' + asset + '/' + suffix + '</b>\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
