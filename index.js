@@ -27,6 +27,8 @@ const marginMap = {
   NAS100:                        { margin: 1294.68,  order: 25893.55  },
   'NASDAQ:TSLA':                 { margin: 612.36,   order: 3061.80   },
   TSLA:                          { margin: 612.36,   order: 3061.80   },
+  'NASDAQ:NVDA':                 { margin: 607.92,   order: 3039.60   },
+  NVDA:                          { margin: 607.92,   order: 3039.60   },
 };
 
 const atrMap = {
@@ -109,7 +111,8 @@ async function getPrice(asset) {
       XAGUSD: 'SI=F', SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
       NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
       USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
-      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA'
+      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
+      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
