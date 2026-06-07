@@ -25,6 +25,8 @@ const marginMap = {
   'FOREXCOM:NAS100':             { margin: 1294.68,  order: 25893.55  },
   US100:                         { margin: 1294.68,  order: 25893.55  },
   NAS100:                        { margin: 1294.68,  order: 25893.55  },
+  'NASDAQ:TSLA':                 { margin: 612.36,   order: 3061.80   },
+  TSLA:                          { margin: 612.36,   order: 3061.80   },
 };
 
 const atrMap = {
@@ -35,6 +37,7 @@ const atrMap = {
   XAGUSD: 0.006, SILVERN2026: 0.006, 'CMCMARKETS:SILVERN2026': 0.006,
   NAS100: 0.0035, US100: 0.0035, 'FOREXCOM:NAS100': 0.0035,
   USOIL: 0.008, 'EASYMARKETS:OILUSD': 0.008,
+  'NASDAQ:TSLA': 0.015, TSLA: 0.015,
   DEFAULT: 0.018
 };
 
@@ -49,20 +52,36 @@ function getAssetSuffix(asset) {
     'FOREXCOM:NAS100', 'CMCMARKETS:SILVERN2026', 'SILVERN2026',
     'CMCMARKETS:GOLDQ2026', 'EASYMARKETS:OILUSD'
   ];
-  return fiat.includes(asset) ? 'USD' : 'USDT';
+  if (fiat.includes(asset)) return 'USD';
+  if (asset === 'NASDAQ:TSLA' || asset === 'TSLA') return 'USD';
+  return 'USDT';
 }
 
 function nowIT() {
   return new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-function calcLevels(entry, direction, asset) {
-  const atrPct = atrMap[asset] || atrMap.DEFAULT;
+function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   const { margin, order } = marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
-  const slDist = entry * atrPct;
-  const tpDist = slDist * 3;
-  const sl = direction === 'LONG' ? +(entry - slDist).toFixed(2) : +(entry + slDist).toFixed(2);
-  const tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
+
+  let sl, tp;
+
+  // Se SL e TP arrivano già pronti dal webhook (es. Tesla) usali direttamente
+  if (slOverride && tpOverride && slOverride > 0 && tpOverride > 0) {
+    sl = +parseFloat(slOverride).toFixed(2);
+    tp = +parseFloat(tpOverride).toFixed(2);
+  } else {
+    // Calcolo automatico con ATR
+    const atrPct = atrMap[asset] || atrMap.DEFAULT;
+    const slDist = entry * atrPct;
+    const tpDist = slDist * 3;
+    sl = direction === 'LONG' ? +(entry - slDist).toFixed(2) : +(entry + slDist).toFixed(2);
+    tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
+  }
+
+  const slDist = Math.abs(entry - sl);
+  const tpDist = Math.abs(tp - entry);
+
   return {
     sl, tp, margin, order,
     slEur: +(slDist / entry * order).toFixed(2),
@@ -89,7 +108,8 @@ async function getPrice(asset) {
       XAU: 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
       XAGUSD: 'SI=F', SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
       NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
-      USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F'
+      USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
+      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA'
     };
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
@@ -273,19 +293,23 @@ async function pollTelegram() {
 
 app.post('/webhook', async (req, res) => {
   try {
-    const { asset, direction, entry } = req.body;
+    const { asset, direction, entry, sl, tp } = req.body;
     if (!asset || !direction || !entry) {
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
     const assetUp = asset.toUpperCase();
     const dir = direction.toUpperCase();
     const entryNum = parseFloat(entry);
+
+    // Blocca doppio segnale stesso asset
     const existing = positions.find(p => p.asset === assetUp);
     if (existing) {
       console.log('Segnale ignorato — posizione già aperta su:', assetUp);
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
-    const lv = calcLevels(entryNum, dir, assetUp);
+
+    // SL e TP: usa quelli del webhook se presenti, altrimenti calcola con ATR
+    const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
     positions.push({ asset: assetUp, direction: dir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
     await sendTelegram(buildEntryMessage(assetUp, dir, entryNum, lv));
     res.json({ ok: true });
