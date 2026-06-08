@@ -69,12 +69,10 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
 
   let sl, tp;
 
-  // Se SL e TP arrivano già pronti dal webhook (es. Tesla) usali direttamente
-  if (slOverride && tpOverride && slOverride > 0 && tpOverride > 0) {
+  if (slOverride && tpOverride && parseFloat(slOverride) > 0 && parseFloat(tpOverride) > 0) {
     sl = +parseFloat(slOverride).toFixed(2);
     tp = +parseFloat(tpOverride).toFixed(2);
   } else {
-    // Calcolo automatico con ATR
     const atrPct = atrMap[asset] || atrMap.DEFAULT;
     const slDist = entry * atrPct;
     const tpDist = slDist * 3;
@@ -82,15 +80,24 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
     tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
   }
 
-  const slDist = Math.abs(entry - sl);
-  const tpDist = Math.abs(tp - entry);
+  // Correzione automatica direzione basata su posizione reale di SL rispetto all'entry
+  // SL > entry = SHORT (stop sopra = posizione short)
+  // SL < entry = LONG (stop sotto = posizione long)
+  const correctedDirection = sl > entry ? 'SHORT' : 'LONG';
+  if (correctedDirection !== direction && direction !== 'BUY' && direction !== 'SELL') {
+    console.log('Direzione corretta:', direction, '->', correctedDirection, 'asset:', asset);
+  }
+
+  const slDistFinal = Math.abs(entry - sl);
+  const tpDistFinal = Math.abs(tp - entry);
 
   return {
     sl, tp, margin, order,
-    slEur: +(slDist / entry * order).toFixed(2),
-    tpEur: +(tpDist / entry * order).toFixed(2),
-    slPct: +(slDist / entry * 100).toFixed(2),
-    tpPct: +(tpDist / entry * 100).toFixed(2)
+    correctedDirection,
+    slEur: +(slDistFinal / entry * order).toFixed(2),
+    tpEur: +(tpDistFinal / entry * order).toFixed(2),
+    slPct: +(slDistFinal / entry * 100).toFixed(2),
+    tpPct: +(tpDistFinal / entry * 100).toFixed(2)
   };
 }
 
@@ -145,7 +152,7 @@ async function sendTelegram(text) {
 }
 
 function buildEntryMessage(asset, direction, entry, lv) {
-  const isLong = direction === 'LONG' || direction === 'BUY';
+  const isLong = direction === 'LONG';
   const emoji = isLong ? '📈' : '📉';
   const arrow = isLong ? '▲' : '▼';
   const suffix = getAssetSuffix(asset);
@@ -306,17 +313,17 @@ app.post('/webhook', async (req, res) => {
     const dir = direction.toUpperCase();
     const entryNum = parseFloat(entry);
 
-    // Blocca doppio segnale stesso asset
     const existing = positions.find(p => p.asset === assetUp);
     if (existing) {
       console.log('Segnale ignorato — posizione già aperta su:', assetUp);
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
 
-    // SL e TP: usa quelli del webhook se presenti, altrimenti calcola con ATR
     const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
-    positions.push({ asset: assetUp, direction: dir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
-    await sendTelegram(buildEntryMessage(assetUp, dir, entryNum, lv));
+    const finalDir = lv.correctedDirection;
+
+    positions.push({ asset: assetUp, direction: finalDir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
+    await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv));
     res.json({ ok: true });
   } catch (e) {
     console.error('Errore webhook:', e.message);
