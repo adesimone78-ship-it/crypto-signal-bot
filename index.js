@@ -330,8 +330,15 @@ app.post('/webhook', async (req, res) => {
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
 
-    const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
+const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
     const finalDir = lv.correctedDirection;
+
+    // Validazione SL anomalo — rifiuta se SL è fuori dal range 50%-150% dell'entry
+    const slRatio = lv.sl / entryNum;
+    if (slRatio < 0.5 || slRatio > 1.5) {
+      console.log('Segnale rifiutato — SL anomalo:', lv.sl, 'entry:', entryNum, 'asset:', assetUp);
+      return res.json({ ok: false, skipped: true, reason: 'SL anomalo: ' + lv.sl });
+    }
 
     positions.push({ asset: assetUp, direction: finalDir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
     await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv));
