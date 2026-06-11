@@ -316,6 +316,7 @@ async function pollTelegram() {
 app.post('/webhook', async (req, res) => {
   try {
     const { asset, direction, entry, sl, tp } = req.body;
+    console.log('Webhook ricevuto:', JSON.stringify(req.body));
     if (!asset || !direction || !entry) {
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
