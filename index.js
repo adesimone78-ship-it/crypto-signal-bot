@@ -68,11 +68,26 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   const { margin, order } = marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
 
   let sl, tp;
+  const slNum = slOverride !== undefined && slOverride !== null ? parseFloat(slOverride) : null;
+  const tpNum = tpOverride !== undefined && tpOverride !== null ? parseFloat(tpOverride) : null;
 
-  if (slOverride && tpOverride && parseFloat(slOverride) > 0 && parseFloat(tpOverride) > 0) {
-    sl = +parseFloat(slOverride).toFixed(2);
-    tp = +parseFloat(tpOverride).toFixed(2);
+  if (slNum !== null && !isNaN(slNum) && slNum > 0) {
+    // SL dinamico ricevuto dal webhook — usalo direttamente
+    sl = +slNum.toFixed(2);
+
+    if (tpNum !== null && !isNaN(tpNum) && tpNum > 0) {
+      // TP anche lui ricevuto — usalo direttamente (es. Tesla, NVDA)
+      tp = +tpNum.toFixed(2);
+    } else {
+      // TP = 0 o assente — calcolalo con R:R 3:1 dallo SL dinamico
+      const slDist = Math.abs(entry - sl);
+      tp = sl > entry
+        ? +(entry - slDist * 3).toFixed(2)   // SHORT: TP sotto entry
+        : +(entry + slDist * 3).toFixed(2);   // LONG: TP sopra entry
+      console.log('TP calcolato da SL dinamico:', sl, '-> TP:', tp, 'asset:', asset);
+    }
   } else {
+    // Nessun SL dinamico — calcolo con ATR fisso
     const atrPct = atrMap[asset] || atrMap.DEFAULT;
     const slDist = entry * atrPct;
     const tpDist = slDist * 3;
@@ -80,13 +95,8 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
     tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
   }
 
-  // Correzione automatica direzione basata su posizione reale di SL rispetto all'entry
-  // SL > entry = SHORT (stop sopra = posizione short)
-  // SL < entry = LONG (stop sotto = posizione long)
+  // Correzione automatica direzione basata su posizione reale SL
   const correctedDirection = sl > entry ? 'SHORT' : 'LONG';
-  if (correctedDirection !== direction && direction !== 'BUY' && direction !== 'SELL') {
-    console.log('Direzione corretta:', direction, '->', correctedDirection, 'asset:', asset);
-  }
 
   const slDistFinal = Math.abs(entry - sl);
   const tpDistFinal = Math.abs(tp - entry);
