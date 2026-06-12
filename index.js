@@ -366,7 +366,8 @@ app.post('/webhook', async (req, res) => {
 
     const assetUp = asset.toUpperCase();
     const dir = direction.toUpperCase();
-    const entryNum = parseFloat(entry);
+    const entryNum = roundPrice(parseFloat(entry), assetUp);
+    
 
     const existing = positions.find(p => p.asset === assetUp);
     if (existing) {
