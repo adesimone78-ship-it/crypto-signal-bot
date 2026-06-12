@@ -43,6 +43,24 @@ const atrMap = {
   DEFAULT: 0.018
 };
 
+// === ARROTONDAMENTO PREZZI PER ASSET ===
+const roundMap = {
+  BTC: 10, 'CMCMARKETS:BTCUSD': 10,
+  ETH: 1, 'CMCMARKETS:ETHUSD': 1,
+  XAU: 1, 'CMCMARKETS:GOLDQ2026': 1,
+  XAGUSD: 0.1, SILVERN2026: 0.1, 'CMCMARKETS:SILVERN2026': 0.1,
+  USOIL: 0.1, 'EASYMARKETS:OILUSD': 0.1,
+  NAS100: 10, US100: 10, 'FOREXCOM:NAS100': 10,
+  'NASDAQ:TSLA': 0.5, TSLA: 0.5,
+  'NASDAQ:NVDA': 0.5, NVDA: 0.5,
+  DEFAULT: 0.01
+};
+
+function roundPrice(price, asset) {
+  const tick = roundMap[asset] || roundMap.DEFAULT;
+  return Math.round(price / tick) * tick;
+}
+
 let positions = [];
 let closedPositions = [];
 let lastUpdateId = 0;
@@ -72,32 +90,29 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   const tpNum = tpOverride !== undefined && tpOverride !== null ? parseFloat(tpOverride) : null;
 
   if (slNum !== null && !isNaN(slNum) && slNum > 0) {
-    // SL dinamico ricevuto dal webhook — usalo direttamente
-    sl = +slNum.toFixed(2);
-
+    sl = roundPrice(slNum, asset);
     if (tpNum !== null && !isNaN(tpNum) && tpNum > 0) {
-      // TP anche lui ricevuto — usalo direttamente (es. Tesla, NVDA)
-      tp = +tpNum.toFixed(2);
+      tp = roundPrice(tpNum, asset);
     } else {
-      // TP = 0 o assente — calcolalo con R:R 3:1 dallo SL dinamico
       const slDist = Math.abs(entry - sl);
       tp = sl > entry
-        ? +(entry - slDist * 3).toFixed(2)   // SHORT: TP sotto entry
-        : +(entry + slDist * 3).toFixed(2);   // LONG: TP sopra entry
+        ? roundPrice(entry - slDist * 3, asset)
+        : roundPrice(entry + slDist * 3, asset);
       console.log('TP calcolato da SL dinamico:', sl, '-> TP:', tp, 'asset:', asset);
     }
   } else {
-    // Nessun SL dinamico — calcolo con ATR fisso
     const atrPct = atrMap[asset] || atrMap.DEFAULT;
     const slDist = entry * atrPct;
     const tpDist = slDist * 3;
-    sl = direction === 'LONG' ? +(entry - slDist).toFixed(2) : +(entry + slDist).toFixed(2);
-    tp = direction === 'LONG' ? +(entry + tpDist).toFixed(2) : +(entry - tpDist).toFixed(2);
+    sl = direction === 'LONG'
+      ? roundPrice(entry - slDist, asset)
+      : roundPrice(entry + slDist, asset);
+    tp = direction === 'LONG'
+      ? roundPrice(entry + tpDist, asset)
+      : roundPrice(entry - tpDist, asset);
   }
 
-  // Correzione automatica direzione basata su posizione reale SL
   const correctedDirection = sl > entry ? 'SHORT' : 'LONG';
-
   const slDistFinal = Math.abs(entry - sl);
   const tpDistFinal = Math.abs(tp - entry);
 
@@ -124,6 +139,20 @@ async function getPrice(asset) {
       const data = await res.json();
       return data[id].usd;
     }
+
+    // Per azioni (TSLA, NVDA) usa Twelve Data API gratuita
+    const twelveMap = {
+      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
+      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+    };
+    if (twelveMap[asset]) {
+      const symbol = twelveMap[asset];
+      const res = await fetch('https://api.twelvedata.com/price?symbol=' + symbol + '&apikey=demo');
+      const data = await res.json();
+      if (data && data.price) return parseFloat(data.price);
+      console.warn('Twelve Data non disponibile per:', symbol, '— fallback Yahoo');
+    }
+
     const yahooMap = {
       XAU: 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
       XAGUSD: 'SI=F', SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
@@ -135,9 +164,11 @@ async function getPrice(asset) {
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
       const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d');
-      const data = await res.json();
+      const text = await res.text();
+      const data = JSON.parse(text);
       return data.chart.result[0].meta.regularMarketPrice;
     }
+
     console.warn('Asset non supportato per price check:', asset);
     return null;
   } catch (e) {
@@ -166,13 +197,16 @@ function buildEntryMessage(asset, direction, entry, lv) {
   const emoji = isLong ? '📈' : '📉';
   const arrow = isLong ? '▲' : '▼';
   const suffix = getAssetSuffix(asset);
+  const tick = roundMap[asset] || roundMap.DEFAULT;
+  const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
+  const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   return '🤖 <b>SIGNAL BOT — ' + asset + '/' + suffix + '</b>\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
     emoji + ' Direzione: ' + arrow + ' ' + direction + '\n' +
     '🕐 Orario: ' + nowIT() + '\n' +
-    '💰 Ingresso:    $' + entry.toLocaleString('it-IT') + '\n' +
-    '🛑 Stop Loss:   $' + lv.sl.toLocaleString('it-IT') + '  (-' + lv.slPct + '% / -€' + lv.slEur + ')\n' +
-    '🎯 Take Profit: $' + lv.tp.toLocaleString('it-IT') + '  (+' + lv.tpPct + '% / +€' + lv.tpEur + ')\n' +
+    '💰 Ingresso:    $' + fmt(entry) + '\n' +
+    '🛑 Stop Loss:   $' + fmt(lv.sl) + '  (-' + lv.slPct + '% / -€' + lv.slEur + ')\n' +
+    '🎯 Take Profit: $' + fmt(lv.tp) + '  (+' + lv.tpPct + '% / +€' + lv.tpEur + ')\n' +
     '⚖️ R:R → 3 : 1\n' +
     '💼 Margine: €' + lv.margin.toLocaleString('it-IT') + ' | Ordine: €' + lv.order.toLocaleString('it-IT') + '\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
@@ -183,6 +217,9 @@ function buildCloseMessage(pos, result, closePrice, pnlEur) {
   const emoji = result === 'WIN' ? '✅' : '❌';
   const pnlStr = pnlEur >= 0 ? '+€' + pnlEur.toFixed(2) : '-€' + Math.abs(pnlEur).toFixed(2);
   const suffix = getAssetSuffix(pos.asset);
+  const tick = roundMap[pos.asset] || roundMap.DEFAULT;
+  const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
+  const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
   const hours = Math.floor(duration / 60);
   const mins = duration % 60;
@@ -190,8 +227,8 @@ function buildCloseMessage(pos, result, closePrice, pnlEur) {
   return emoji + ' <b>POSIZIONE CHIUSA — ' + pos.asset + '/' + suffix + '</b>\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
     '📊 Direzione: ' + pos.direction + '\n' +
-    '💰 Ingresso:  $' + pos.entry.toLocaleString('it-IT') + '\n' +
-    '🏁 Uscita:    $' + closePrice.toLocaleString('it-IT') + '\n' +
+    '💰 Ingresso:  $' + fmt(pos.entry) + '\n' +
+    '🏁 Uscita:    $' + fmt(closePrice) + '\n' +
     '⏱ Durata:    ' + durStr + '\n' +
     (result === 'WIN' ? '🎯 Take Profit raggiunto' : '🛑 Stop Loss raggiunto') + '\n' +
     '💶 P&L: <b>' + pnlStr + '</b>\n' +
@@ -229,13 +266,16 @@ function buildOpenPositions() {
   let msg = '📋 <b>POSIZIONI APERTE (' + positions.length + ')</b>\n━━━━━━━━━━━━━━━━━━\n';
   positions.forEach((pos, i) => {
     const suffix = getAssetSuffix(pos.asset);
+    const tick = roundMap[pos.asset] || roundMap.DEFAULT;
+    const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
+    const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
     const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
     const hours = Math.floor(duration / 60);
     const mins = duration % 60;
     const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
     msg += (i + 1) + '. <b>' + pos.asset + '/' + suffix + '</b> ' + pos.direction + '\n';
-    msg += '   💰 Entry: $' + pos.entry.toLocaleString('it-IT') + '\n';
-    msg += '   🛑 SL: $' + pos.sl.toLocaleString('it-IT') + ' | 🎯 TP: $' + pos.tp.toLocaleString('it-IT') + '\n';
+    msg += '   💰 Entry: $' + fmt(pos.entry) + '\n';
+    msg += '   🛑 SL: $' + fmt(pos.sl) + ' | 🎯 TP: $' + fmt(pos.tp) + '\n';
     msg += '   ⏱ Aperta da: ' + durStr + '\n';
     if (i < positions.length - 1) msg += '─────────────────\n';
   });
@@ -317,9 +357,13 @@ app.post('/webhook', async (req, res) => {
   try {
     const { asset, direction, entry, sl, tp } = req.body;
     console.log('Webhook ricevuto:', JSON.stringify(req.body));
+
+    // Fix 1 — ignora payload vuoti
     if (!asset || !direction || !entry) {
+      console.log('Payload vuoto o incompleto — ignorato');
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
+
     const assetUp = asset.toUpperCase();
     const dir = direction.toUpperCase();
     const entryNum = parseFloat(entry);
@@ -330,10 +374,10 @@ app.post('/webhook', async (req, res) => {
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
 
-const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
+    const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
     const finalDir = lv.correctedDirection;
 
-    // Validazione SL anomalo — rifiuta se SL è fuori dal range 50%-150% dell'entry
+    // Fix 2 — valida SL anomalo
     const slRatio = lv.sl / entryNum;
     if (slRatio < 0.5 || slRatio > 1.5) {
       console.log('Segnale rifiutato — SL anomalo:', lv.sl, 'entry:', entryNum, 'asset:', assetUp);
