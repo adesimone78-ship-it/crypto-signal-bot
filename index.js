@@ -6,6 +6,8 @@ app.use(express.json());
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const MARGIN_DEFAULT = 274.10;
 const ORDER_DEFAULT = 548.20;
 
@@ -43,7 +45,6 @@ const atrMap = {
   DEFAULT: 0.018
 };
 
-// === ARROTONDAMENTO PREZZI PER ASSET ===
 const roundMap = {
   BTC: 10, 'CMCMARKETS:BTCUSD': 10,
   ETH: 1, 'CMCMARKETS:ETHUSD': 1,
@@ -66,6 +67,77 @@ let closedPositions = [];
 let lastUpdateId = 0;
 let processedIds = new Set();
 
+// === SUPABASE ===
+async function dbInsertTrade(pos, lv) {
+  try {
+    const res = await fetch(SUPABASE_URL + '/rest/v1/trades', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify({
+        asset: pos.asset,
+        direction: pos.direction,
+        entry: pos.entry,
+        sl: pos.sl,
+        tp: pos.tp,
+        margin: lv.margin,
+        order_eur: lv.order,
+        opened_at: pos.openedAt
+      })
+    });
+    const data = await res.json();
+    if (data && data[0]) {
+      console.log('Trade salvato su Supabase, id:', data[0].id);
+      return data[0].id;
+    }
+  } catch (e) {
+    console.error('Errore Supabase insert:', e.message);
+  }
+  return null;
+}
+
+async function dbCloseTrade(dbId, closePrice, result, pnlEur) {
+  if (!dbId) return;
+  try {
+    await fetch(SUPABASE_URL + '/rest/v1/trades?id=eq.' + dbId, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY
+      },
+      body: JSON.stringify({
+        closed_at: new Date().toISOString(),
+        close_price: closePrice,
+        result: result,
+        pnl_eur: pnlEur
+      })
+    });
+    console.log('Trade chiuso su Supabase, id:', dbId);
+  } catch (e) {
+    console.error('Errore Supabase update:', e.message);
+  }
+}
+
+async function dbGetStats() {
+  try {
+    const res = await fetch(SUPABASE_URL + '/rest/v1/trades?select=*&order=opened_at.desc', {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY
+      }
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('Errore Supabase stats:', e.message);
+    return [];
+  }
+}
+
 function getAssetSuffix(asset) {
   const fiat = [
     'XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD',
@@ -84,7 +156,6 @@ function nowIT() {
 
 function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   const { margin, order } = marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
-
   let sl, tp;
   const slNum = slOverride !== undefined && slOverride !== null ? parseFloat(slOverride) : null;
   const tpNum = tpOverride !== undefined && tpOverride !== null ? parseFloat(tpOverride) : null;
@@ -95,21 +166,15 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
       tp = roundPrice(tpNum, asset);
     } else {
       const slDist = Math.abs(entry - sl);
-      tp = sl > entry
-        ? roundPrice(entry - slDist * 3, asset)
-        : roundPrice(entry + slDist * 3, asset);
+      tp = sl > entry ? roundPrice(entry - slDist * 3, asset) : roundPrice(entry + slDist * 3, asset);
       console.log('TP calcolato da SL dinamico:', sl, '-> TP:', tp, 'asset:', asset);
     }
   } else {
     const atrPct = atrMap[asset] || atrMap.DEFAULT;
     const slDist = entry * atrPct;
     const tpDist = slDist * 3;
-    sl = direction === 'LONG'
-      ? roundPrice(entry - slDist, asset)
-      : roundPrice(entry + slDist, asset);
-    tp = direction === 'LONG'
-      ? roundPrice(entry + tpDist, asset)
-      : roundPrice(entry - tpDist, asset);
+    sl = direction === 'LONG' ? roundPrice(entry - slDist, asset) : roundPrice(entry + slDist, asset);
+    tp = direction === 'LONG' ? roundPrice(entry + tpDist, asset) : roundPrice(entry - tpDist, asset);
   }
 
   const correctedDirection = sl > entry ? 'SHORT' : 'LONG';
@@ -117,8 +182,7 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   const tpDistFinal = Math.abs(tp - entry);
 
   return {
-    sl, tp, margin, order,
-    correctedDirection,
+    sl, tp, margin, order, correctedDirection,
     slEur: +(slDistFinal / entry * order).toFixed(2),
     tpEur: +(tpDistFinal / entry * order).toFixed(2),
     slPct: +(slDistFinal / entry * 100).toFixed(2),
@@ -139,27 +203,19 @@ async function getPrice(asset) {
       const data = await res.json();
       return data[id].usd;
     }
-
-    // Per azioni (TSLA, NVDA) usa Twelve Data API gratuita
-    const twelveMap = {
-      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
-      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
-    };
+    const twelveMap = { 'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA', 'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA' };
     if (twelveMap[asset]) {
       const symbol = twelveMap[asset];
       const res = await fetch('https://api.twelvedata.com/price?symbol=' + symbol + '&apikey=demo');
       const data = await res.json();
       if (data && data.price) return parseFloat(data.price);
-      console.warn('Twelve Data non disponibile per:', symbol, '— fallback Yahoo');
     }
-
     const yahooMap = {
       XAU: 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
       XAGUSD: 'SI=F', SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
       NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
       USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
-      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
-      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA', 'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
@@ -168,8 +224,6 @@ async function getPrice(asset) {
       const data = JSON.parse(text);
       return data.chart.result[0].meta.regularMarketPrice;
     }
-
-    console.warn('Asset non supportato per price check:', asset);
     return null;
   } catch (e) {
     console.error('Errore getPrice:', asset, e.message);
@@ -241,9 +295,9 @@ function buildReport(label, filtered) {
   }
   const wins = filtered.filter(p => p.result === 'WIN').length;
   const losses = filtered.filter(p => p.result === 'LOSS').length;
-  const totalPnl = filtered.reduce((a, p) => a + p.pnlEur, 0);
-  const grossWin = filtered.filter(p => p.result === 'WIN').reduce((a, p) => a + p.pnlEur, 0);
-  const grossLoss = filtered.filter(p => p.result === 'LOSS').reduce((a, p) => a + p.pnlEur, 0);
+  const totalPnl = filtered.reduce((a, p) => a + p.pnl_eur, 0);
+  const grossWin = filtered.filter(p => p.result === 'WIN').reduce((a, p) => a + p.pnl_eur, 0);
+  const grossLoss = filtered.filter(p => p.result === 'LOSS').reduce((a, p) => a + p.pnl_eur, 0);
   const winRate = ((wins / filtered.length) * 100).toFixed(1);
   const pf = grossLoss !== 0 ? (grossWin / Math.abs(grossLoss)).toFixed(2) : '∞';
   const pnlStr = totalPnl >= 0 ? '+€' + totalPnl.toFixed(2) : '-€' + Math.abs(totalPnl).toFixed(2);
@@ -257,6 +311,41 @@ function buildReport(label, filtered) {
     '📉 Perdita lorda: -€' + Math.abs(grossLoss).toFixed(2) + '\n' +
     '⚖️ Profit Factor: ' + pf + '\n' +
     '━━━━━━━━━━━━━━━━━━';
+}
+
+async function buildStatsMessage(trades) {
+  const closed = trades.filter(t => t.result !== null);
+  if (closed.length === 0) return '📊 <b>STATISTICHE</b>\n━━━━━━━━━━━━━━━━━━\nNessun trade chiuso nel database.';
+
+  const byAsset = {};
+  for (const t of closed) {
+    if (!byAsset[t.asset]) byAsset[t.asset] = { wins: 0, losses: 0, pnl: 0 };
+    if (t.result === 'WIN') byAsset[t.asset].wins++;
+    else byAsset[t.asset].losses++;
+    byAsset[t.asset].pnl += parseFloat(t.pnl_eur || 0);
+  }
+
+  const totalWins = closed.filter(t => t.result === 'WIN').length;
+  const totalLosses = closed.filter(t => t.result === 'LOSS').length;
+  const totalPnl = closed.reduce((a, t) => a + parseFloat(t.pnl_eur || 0), 0);
+  const winRate = ((totalWins / closed.length) * 100).toFixed(1);
+
+  let msg = '📊 <b>STATISTICHE COMPLETE</b>\n━━━━━━━━━━━━━━━━━━\n';
+  msg += '📈 Trade totali: ' + closed.length + '\n';
+  msg += '✅ Win: ' + totalWins + ' | ❌ Loss: ' + totalLosses + '\n';
+  msg += '🎯 Win Rate: ' + winRate + '%\n';
+  msg += '💶 P&L Totale: <b>' + (totalPnl >= 0 ? '+' : '') + '€' + totalPnl.toFixed(2) + '</b>\n';
+  msg += '━━━━━━━━━━━━━━━━━━\n';
+  msg += '<b>Per asset:</b>\n';
+
+  for (const [asset, s] of Object.entries(byAsset)) {
+    const tot = s.wins + s.losses;
+    const wr = ((s.wins / tot) * 100).toFixed(0);
+    const pnlStr = s.pnl >= 0 ? '+€' + s.pnl.toFixed(2) : '-€' + Math.abs(s.pnl).toFixed(2);
+    msg += '• <b>' + asset + '</b>: ' + tot + ' trade | ' + wr + '% win | ' + pnlStr + '\n';
+  }
+  msg += '━━━━━━━━━━━━━━━━━━';
+  return msg;
 }
 
 function buildOpenPositions() {
@@ -283,14 +372,14 @@ function buildOpenPositions() {
   return msg;
 }
 
-function getFiltered(type) {
+function getFiltered(type, trades) {
   const now = new Date();
   const from = new Date();
   if (type === 'day') from.setHours(0, 0, 0, 0);
   else if (type === 'week') from.setDate(now.getDate() - 7);
   else if (type === 'month') from.setMonth(now.getMonth() - 1);
   else if (type === 'year') from.setFullYear(now.getFullYear() - 1);
-  return closedPositions.filter(p => new Date(p.closedAt) >= from);
+  return trades.filter(p => new Date(p.closed_at || p.closedAt) >= from && p.result !== null);
 }
 
 async function checkPositions() {
@@ -315,7 +404,8 @@ async function checkPositions() {
           : (pos.direction === 'LONG' ? pos.sl - pos.entry : pos.entry - pos.sl);
         const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
         const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
-        closedPositions.push(Object.assign({}, pos, { result, closePrice, pnlEur, closedAt: new Date() }));
+        await dbCloseTrade(pos.dbId, closePrice, result, pnlEur);
+        closedPositions.push(Object.assign({}, pos, { result, closePrice, pnl_eur: pnlEur, closedAt: new Date() }));
         positions.splice(i, 1);
         await sendTelegram(buildCloseMessage(pos, result, closePrice, pnlEur));
       }
@@ -338,11 +428,19 @@ async function pollTelegram() {
       if (!message || !message.text) continue;
       const text = message.text.trim().toLowerCase();
       let reply = null;
-      if (text === '/giorno') reply = buildReport('GIORNALIERO', getFiltered('day'));
-      else if (text === '/settimana') reply = buildReport('SETTIMANALE', getFiltered('week'));
-      else if (text === '/mese') reply = buildReport('MENSILE', getFiltered('month'));
-      else if (text === '/anno') reply = buildReport('ANNUALE', getFiltered('year'));
-      else if (text === '/aperte') reply = buildOpenPositions();
+
+      if (text === '/giorno' || text === '/settimana' || text === '/mese' || text === '/anno') {
+        const trades = await dbGetStats();
+        const type = text === '/giorno' ? 'day' : text === '/settimana' ? 'week' : text === '/mese' ? 'month' : 'year';
+        const label = text === '/giorno' ? 'GIORNALIERO' : text === '/settimana' ? 'SETTIMANALE' : text === '/mese' ? 'MENSILE' : 'ANNUALE';
+        reply = buildReport(label, getFiltered(type, trades));
+      } else if (text === '/aperte') {
+        reply = buildOpenPositions();
+      } else if (text === '/stats') {
+        const trades = await dbGetStats();
+        reply = await buildStatsMessage(trades);
+      }
+
       if (reply) {
         console.log('Invio risposta a:', text, 'update_id:', update.update_id);
         await sendTelegram(reply);
@@ -358,7 +456,6 @@ app.post('/webhook', async (req, res) => {
     const { asset, direction, entry, sl, tp } = req.body;
     console.log('Webhook ricevuto:', JSON.stringify(req.body));
 
-    // Fix 1 — ignora payload vuoti
     if (!asset || !direction || !entry) {
       console.log('Payload vuoto o incompleto — ignorato');
       return res.status(400).json({ error: 'Parametri mancanti' });
@@ -367,7 +464,6 @@ app.post('/webhook', async (req, res) => {
     const assetUp = asset.toUpperCase();
     const dir = direction.toUpperCase();
     const entryNum = roundPrice(parseFloat(entry), assetUp);
-    
 
     const existing = positions.find(p => p.asset === assetUp);
     if (existing) {
@@ -378,14 +474,16 @@ app.post('/webhook', async (req, res) => {
     const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
     const finalDir = lv.correctedDirection;
 
-    // Fix 2 — valida SL anomalo
     const slRatio = lv.sl / entryNum;
     if (slRatio < 0.5 || slRatio > 1.5) {
       console.log('Segnale rifiutato — SL anomalo:', lv.sl, 'entry:', entryNum, 'asset:', assetUp);
       return res.json({ ok: false, skipped: true, reason: 'SL anomalo: ' + lv.sl });
     }
 
-    positions.push({ asset: assetUp, direction: finalDir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() });
+    const pos = { asset: assetUp, direction: finalDir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() };
+    const dbId = await dbInsertTrade(pos, lv);
+    pos.dbId = dbId;
+    positions.push(pos);
     await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv));
     res.json({ ok: true });
   } catch (e) {
