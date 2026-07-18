@@ -197,11 +197,21 @@ async function getPrice(asset) {
       ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
       SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
     };
-    if (cryptoMap[asset]) {
+if (cryptoMap[asset]) {
       const id = cryptoMap[asset];
-      const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + id + '&vs_currencies=usd');
-      const data = await res.json();
-      return data[id].usd;
+      try {
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + id + '&vs_currencies=usd');
+        const data = await res.json();
+        if (data && data[id] && data[id].usd) return data[id].usd;
+        console.warn('CoinGecko risposta vuota per:', id, '— fallback Binance');
+      } catch(e) {
+        console.warn('CoinGecko errore:', e.message);
+      }
+      // Fallback Binance API pubblica
+      const binanceSymbol = asset.includes('ETH') ? 'ETHUSDT' : 'BTCUSDT';
+      const res2 = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + binanceSymbol);
+      const data2 = await res2.json();
+      return parseFloat(data2.price);
     }
     const twelveMap = { 'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA', 'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA' };
     if (twelveMap[asset]) {
@@ -434,8 +444,11 @@ async function pollTelegram() {
         const type = text === '/giorno' ? 'day' : text === '/settimana' ? 'week' : text === '/mese' ? 'month' : 'year';
         const label = text === '/giorno' ? 'GIORNALIERO' : text === '/settimana' ? 'SETTIMANALE' : text === '/mese' ? 'MENSILE' : 'ANNUALE';
         reply = buildReport(label, getFiltered(type, trades));
-      } else if (text === '/aperte') {
+   } else if (text === '/aperte') {
         reply = buildOpenPositions();
+      } else if (text === '/chiudi tutto') {
+        positions = [];
+        reply = '🗑 <b>Tutte le posizioni cancellate dalla memoria.</b>\nNota: i trade aperti su Supabase restano registrati.';
       } else if (text === '/stats') {
         const trades = await dbGetStats();
         reply = await buildStatsMessage(trades);
