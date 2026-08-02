@@ -17,9 +17,14 @@ const marginMap = {
   ETH:                           { margin: 381.94,   order: 763.88    },
   'CMCMARKETS:ETHUSD':           { margin: 36.12,    order: 72.25     },
   SOL:                           { margin: 274.10,   order: 548.20    },
+  // Gold — simbolo generico + vecchi contratti per compatibilità storica
   XAU:                           { margin: 970.97,   order: 19419.43  },
+  'CMCMARKETS:GOLD':             { margin: 970.97,   order: 19419.43  },
   'CMCMARKETS:GOLDQ2026':        { margin: 970.97,   order: 19419.43  },
+  // Silver — contratto settembre 2026
   XAGUSD:                        { margin: 1594.81,  order: 15948.15  },
+  'CMCMARKETS:SILVER':           { margin: 1594.81,  order: 15948.15  },
+  'CMCMARKETS:SILVERU2026':      { margin: 1594.81,  order: 15948.15  },
   'CMCMARKETS:SILVERN2026':      { margin: 1594.81,  order: 15948.15  },
   SILVERN2026:                   { margin: 1594.81,  order: 15948.15  },
   USOIL:                         { margin: 400.28,   order: 4002.80   },
@@ -37,8 +42,9 @@ const atrMap = {
   BTC: 0.018, 'CMCMARKETS:BTCUSD': 0.018,
   ETH: 0.018, 'CMCMARKETS:ETHUSD': 0.018,
   SOL: 0.022,
-  XAU: 0.004, 'CMCMARKETS:GOLDQ2026': 0.004,
-  XAGUSD: 0.006, SILVERN2026: 0.006, 'CMCMARKETS:SILVERN2026': 0.006,
+  XAU: 0.004, 'CMCMARKETS:GOLD': 0.004, 'CMCMARKETS:GOLDQ2026': 0.004,
+  XAGUSD: 0.006, 'CMCMARKETS:SILVER': 0.006, 'CMCMARKETS:SILVERU2026': 0.006,
+  SILVERN2026: 0.006, 'CMCMARKETS:SILVERN2026': 0.006,
   NAS100: 0.0035, US100: 0.0035, 'FOREXCOM:NAS100': 0.0035,
   USOIL: 0.008, 'EASYMARKETS:OILUSD': 0.008,
   'NASDAQ:TSLA': 0.015, TSLA: 0.015,
@@ -48,8 +54,9 @@ const atrMap = {
 const roundMap = {
   BTC: 10, 'CMCMARKETS:BTCUSD': 10,
   ETH: 1, 'CMCMARKETS:ETHUSD': 1,
-  XAU: 1, 'CMCMARKETS:GOLDQ2026': 1,
-  XAGUSD: 0.1, SILVERN2026: 0.1, 'CMCMARKETS:SILVERN2026': 0.1,
+  XAU: 1, 'CMCMARKETS:GOLD': 1, 'CMCMARKETS:GOLDQ2026': 1,
+  XAGUSD: 0.1, 'CMCMARKETS:SILVER': 0.1, 'CMCMARKETS:SILVERU2026': 0.1,
+  SILVERN2026: 0.1, 'CMCMARKETS:SILVERN2026': 0.1,
   USOIL: 0.1, 'EASYMARKETS:OILUSD': 0.1,
   NAS100: 10, US100: 10, 'FOREXCOM:NAS100': 10,
   'NASDAQ:TSLA': 0.5, TSLA: 0.5,
@@ -141,8 +148,10 @@ async function dbGetStats() {
 function getAssetSuffix(asset) {
   const fiat = [
     'XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD',
-    'FOREXCOM:NAS100', 'CMCMARKETS:SILVERN2026', 'SILVERN2026',
-    'CMCMARKETS:GOLDQ2026', 'EASYMARKETS:OILUSD'
+    'FOREXCOM:NAS100', 'EASYMARKETS:OILUSD',
+    'CMCMARKETS:GOLD', 'CMCMARKETS:GOLDQ2026',
+    'CMCMARKETS:SILVER', 'CMCMARKETS:SILVERU2026',
+    'CMCMARKETS:SILVERN2026', 'SILVERN2026'
   ];
   if (fiat.includes(asset)) return 'USD';
   if (asset === 'NASDAQ:TSLA' || asset === 'TSLA') return 'USD';
@@ -197,7 +206,7 @@ async function getPrice(asset) {
       ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
       SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
     };
-if (cryptoMap[asset]) {
+    if (cryptoMap[asset]) {
       const id = cryptoMap[asset];
       try {
         const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + id + '&vs_currencies=usd');
@@ -207,25 +216,33 @@ if (cryptoMap[asset]) {
       } catch(e) {
         console.warn('CoinGecko errore:', e.message);
       }
-      // Fallback Binance API pubblica
       const binanceSymbol = asset.includes('ETH') ? 'ETHUSDT' : 'BTCUSDT';
       const res2 = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + binanceSymbol);
       const data2 = await res2.json();
       return parseFloat(data2.price);
     }
-    const twelveMap = { 'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA', 'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA' };
+
+    const twelveMap = {
+      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
+      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+    };
     if (twelveMap[asset]) {
       const symbol = twelveMap[asset];
       const res = await fetch('https://api.twelvedata.com/price?symbol=' + symbol + '&apikey=demo');
       const data = await res.json();
       if (data && data.price) return parseFloat(data.price);
     }
+
     const yahooMap = {
-      XAU: 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
-      XAGUSD: 'SI=F', SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
+      XAU: 'GC=F',
+      'CMCMARKETS:GOLD': 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
+      XAGUSD: 'SI=F',
+      'CMCMARKETS:SILVER': 'SI=F', 'CMCMARKETS:SILVERU2026': 'SI=F',
+      SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
       NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
       USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
-      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA', 'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
+      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
@@ -444,7 +461,7 @@ async function pollTelegram() {
         const type = text === '/giorno' ? 'day' : text === '/settimana' ? 'week' : text === '/mese' ? 'month' : 'year';
         const label = text === '/giorno' ? 'GIORNALIERO' : text === '/settimana' ? 'SETTIMANALE' : text === '/mese' ? 'MENSILE' : 'ANNUALE';
         reply = buildReport(label, getFiltered(type, trades));
-   } else if (text === '/aperte') {
+      } else if (text === '/aperte') {
         reply = buildOpenPositions();
       } else if (text === '/chiudi tutto') {
         positions = [];
