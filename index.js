@@ -32,6 +32,8 @@ const marginMap = {
   'FOREXCOM:NAS100':             { margin: 1294.68,  order: 25893.55  },
   US100:                         { margin: 1294.68,  order: 25893.55  },
   NAS100:                        { margin: 1294.68,  order: 25893.55  },
+  'PEPPERSTONE:US500':           { margin: 330.50,   order: 6610.03   },
+  US500:                         { margin: 330.50,   order: 6610.03   },
   'NASDAQ:TSLA':                 { margin: 612.36,   order: 3061.80   },
   TSLA:                          { margin: 612.36,   order: 3061.80   },
   'NASDAQ:NVDA':                 { margin: 607.92,   order: 3039.60   },
@@ -46,6 +48,7 @@ const atrMap = {
   XAGUSD: 0.006, 'CMCMARKETS:SILVER': 0.006, 'CMCMARKETS:SILVERU2026': 0.006,
   SILVERN2026: 0.006, 'CMCMARKETS:SILVERN2026': 0.006,
   NAS100: 0.0035, US100: 0.0035, 'FOREXCOM:NAS100': 0.0035,
+  'PEPPERSTONE:US500': 0.0035, US500: 0.0035,
   USOIL: 0.008, 'EASYMARKETS:OILUSD': 0.008,
   'NASDAQ:TSLA': 0.015, TSLA: 0.015,
   DEFAULT: 0.018
@@ -61,6 +64,7 @@ const roundMap = {
   NAS100: 10, US100: 10, 'FOREXCOM:NAS100': 10,
   'NASDAQ:TSLA': 0.5, TSLA: 0.5,
   'NASDAQ:NVDA': 0.5, NVDA: 0.5,
+  'PEPPERSTONE:US500': 1, US500: 1,
   DEFAULT: 0.01
 };
 
@@ -151,7 +155,7 @@ function getAssetSuffix(asset) {
     'FOREXCOM:NAS100', 'EASYMARKETS:OILUSD',
     'CMCMARKETS:GOLD', 'CMCMARKETS:GOLDQ2026',
     'CMCMARKETS:SILVER', 'CMCMARKETS:SILVERU2026',
-    'CMCMARKETS:SILVERN2026', 'SILVERN2026'
+    'CMCMARKETS:SILVERN2026', 'SILVERN2026', 'PEPPERSTONE:US500', 'US500'
   ];
   if (fiat.includes(asset)) return 'USD';
   if (asset === 'NASDAQ:TSLA' || asset === 'TSLA') return 'USD';
@@ -240,6 +244,7 @@ async function getPrice(asset) {
       'CMCMARKETS:SILVER': 'SI=F', 'CMCMARKETS:SILVERU2026': 'SI=F',
       SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
       NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
+      'PEPPERSTONE:US500': 'ES=F', US500: 'ES=F',
       USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
       'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
