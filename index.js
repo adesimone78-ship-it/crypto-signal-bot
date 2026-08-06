@@ -430,6 +430,28 @@ async function checkPositions() {
         if (price <= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
         else if (price >= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
       }
+      // Chiusura automatica dopo 7 giorni
+      const ageHours = (new Date() - new Date(pos.openedAt)) / 3600000;
+      if (ageHours >= 168 && result === null) {
+        const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
+        const priceDiff = pos.direction === 'LONG' ? price - pos.entry : pos.entry - price;
+        const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
+        const timeoutResult = pnlEur >= 0 ? 'WIN' : 'LOSS';
+        await dbCloseTrade(pos.dbId, price, timeoutResult, pnlEur);
+        closedPositions.push(Object.assign({}, pos, { result: timeoutResult, closePrice: price, pnl_eur: pnlEur, closedAt: new Date() }));
+        positions.splice(i, 1);
+        await sendTelegram(
+          '⏰ <b>POSIZIONE CHIUSA — TIMEOUT 7 GIORNI</b>\n' +
+          '━━━━━━━━━━━━━━━━━━\n' +
+          '📊 Asset: <b>' + pos.asset + '</b>\n' +
+          '📊 Direzione: ' + pos.direction + '\n' +
+          '💰 Ingresso: $' + pos.entry.toLocaleString('it-IT') + '\n' +
+          '🏁 Uscita: $' + price.toLocaleString('it-IT') + '\n' +
+          '💶 P&L: <b>' + (pnlEur >= 0 ? '+' : '') + '€' + pnlEur.toFixed(2) + '</b>\n' +
+          '━━━━━━━━━━━━━━━━━━'
+        );
+        continue;
+      }
       if (result) {
         const priceDiff = result === 'WIN'
           ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
