@@ -518,7 +518,10 @@ app.post('/webhook', async (req, res) => {
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
 
-    const assetUp = asset.toUpperCase();
+    let assetUp = asset.toUpperCase();
+    // Normalizza simboli alternativi
+    if (assetUp === 'US500') assetUp = 'PEPPERSTONE:US500';
+    if (assetUp === 'US100') assetUp = 'FOREXCOM:NAS100';
     const dir = direction.toUpperCase();
     const entryNum = roundPrice(parseFloat(entry), assetUp);
 
