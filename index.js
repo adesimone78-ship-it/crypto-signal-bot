@@ -553,12 +553,48 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
-
 const PORT = process.env.PORT || 3000;
+
+
+// === RESOCONTI AUTOMATICI ===
+function checkScheduledReports() {
+  const now = new Date();
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const d = now.getDate();
+  const dow = now.getDay(); // 0=domenica, 1=lunedì
+
+  // Resoconto giornaliero alle 20:00
+  if (h === 20 && m === 0) {
+    dbGetStats().then(trades => {
+      const filtered = getFiltered('day', trades);
+      sendTelegram(buildReport('GIORNALIERO', filtered));
+    });
+  }
+
+  // Resoconto settimanale ogni lunedì alle 09:00
+  if (dow === 1 && h === 9 && m === 0) {
+    dbGetStats().then(trades => {
+      const filtered = getFiltered('week', trades);
+      sendTelegram(buildReport('SETTIMANALE', filtered));
+    });
+  }
+
+  // Resoconto mensile il primo del mese alle 09:00
+  if (d === 1 && h === 9 && m === 0) {
+    dbGetStats().then(trades => {
+      const filtered = getFiltered('month', trades);
+      sendTelegram(buildReport('MENSILE', filtered));
+    });
+  }
+}
+
+
 app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
   await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
   console.log('Webhook rimosso, polling attivo');
   setInterval(checkPositions, 3 * 60 * 1000);
   setInterval(pollTelegram, 3000);
+  setInterval(checkScheduledReports, 60 * 1000);
 });
