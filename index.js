@@ -249,12 +249,21 @@ async function getPrice(asset) {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
       'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
-    if (yahooMap[asset]) {
+   if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
-      const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d');
-      const text = await res.text();
-      const data = JSON.parse(text);
-      return data.chart.result[0].meta.regularMarketPrice;
+      try {
+        const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d');
+        const text = await res.text();
+        if (text.includes('Too Many Requests')) {
+          console.warn('Yahoo rate limit per:', symbol);
+          return null;
+        }
+        const data = JSON.parse(text);
+        return data.chart.result[0].meta.regularMarketPrice;
+      } catch(e) {
+        console.warn('Yahoo errore per:', symbol, e.message);
+        return null;
+      }
     }
     return null;
   } catch (e) {
@@ -559,10 +568,11 @@ const PORT = process.env.PORT || 3000;
 // === RESOCONTI AUTOMATICI ===
 function checkScheduledReports() {
   const now = new Date();
-  const h = now.getHours();
-  const m = now.getMinutes();
-  const d = now.getDate();
-  const dow = now.getDay(); // 0=domenica, 1=lunedì
+  const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
+  const h = itTime.getHours();
+  const m = itTime.getMinutes();
+  const d = itTime.getDate();
+  const dow = itTime.getDay();
 
   // Resoconto giornaliero alle 20:00
   if (h === 20 && m === 0) {
