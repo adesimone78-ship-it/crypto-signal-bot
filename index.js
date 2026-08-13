@@ -17,11 +17,9 @@ const marginMap = {
   ETH:                           { margin: 381.94,   order: 763.88    },
   'CMCMARKETS:ETHUSD':           { margin: 36.12,    order: 72.25     },
   SOL:                           { margin: 274.10,   order: 548.20    },
-  // Gold — simbolo generico + vecchi contratti per compatibilità storica
   XAU:                           { margin: 970.97,   order: 19419.43  },
   'CMCMARKETS:GOLD':             { margin: 970.97,   order: 19419.43  },
   'CMCMARKETS:GOLDQ2026':        { margin: 970.97,   order: 19419.43  },
-  // Silver — contratto settembre 2026
   XAGUSD:                        { margin: 1594.81,  order: 15948.15  },
   'CMCMARKETS:SILVER':           { margin: 1594.81,  order: 15948.15  },
   'CMCMARKETS:SILVERU2026':      { margin: 1594.81,  order: 15948.15  },
@@ -62,9 +60,9 @@ const roundMap = {
   SILVERN2026: 0.1, 'CMCMARKETS:SILVERN2026': 0.1,
   USOIL: 0.1, 'EASYMARKETS:OILUSD': 0.1,
   NAS100: 10, US100: 10, 'FOREXCOM:NAS100': 10,
+  'PEPPERSTONE:US500': 1, US500: 1,
   'NASDAQ:TSLA': 0.5, TSLA: 0.5,
   'NASDAQ:NVDA': 0.5, NVDA: 0.5,
-  'PEPPERSTONE:US500': 1, US500: 1,
   DEFAULT: 0.01
 };
 
@@ -77,6 +75,9 @@ let positions = [];
 let closedPositions = [];
 let lastUpdateId = 0;
 let processedIds = new Set();
+let lastReportDay = -1;
+let lastReportWeek = -1;
+let lastReportMonth = -1;
 
 // === SUPABASE ===
 async function dbInsertTrade(pos, lv) {
@@ -149,13 +150,33 @@ async function dbGetStats() {
   }
 }
 
+// Ping Supabase ogni ora per evitare la pausa automatica del piano free
+async function pingSupabase() {
+  try {
+    const res = await fetch(SUPABASE_URL + '/rest/v1/trades?select=id&limit=1', {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY
+      }
+    });
+    if (res.ok) {
+      console.log('Supabase ping ok');
+    } else {
+      console.warn('Supabase ping fallito, status:', res.status);
+    }
+  } catch (e) {
+    console.error('Errore ping Supabase:', e.message);
+  }
+}
+
 function getAssetSuffix(asset) {
   const fiat = [
     'XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD',
     'FOREXCOM:NAS100', 'EASYMARKETS:OILUSD',
     'CMCMARKETS:GOLD', 'CMCMARKETS:GOLDQ2026',
     'CMCMARKETS:SILVER', 'CMCMARKETS:SILVERU2026',
-    'CMCMARKETS:SILVERN2026', 'SILVERN2026', 'PEPPERSTONE:US500', 'US500'
+    'CMCMARKETS:SILVERN2026', 'SILVERN2026',
+    'PEPPERSTONE:US500', 'US500'
   ];
   if (fiat.includes(asset)) return 'USD';
   if (asset === 'NASDAQ:TSLA' || asset === 'TSLA') return 'USD';
@@ -206,24 +227,18 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
 async function getPrice(asset) {
   try {
     const cryptoMap = {
-      BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
-      ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
-      SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
+      BTC: 'BTCUSDT', 'CMCMARKETS:BTCUSD': 'BTCUSDT',
+      ETH: 'ETHUSDT', 'CMCMARKETS:ETHUSD': 'ETHUSDT',
+      SOL: 'SOLUSDT', BNB: 'BNBUSDT', XRP: 'XRPUSDT'
     };
     if (cryptoMap[asset]) {
-      const id = cryptoMap[asset];
-      try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + id + '&vs_currencies=usd');
-        const data = await res.json();
-        if (data && data[id] && data[id].usd) return data[id].usd;
-        console.warn('CoinGecko risposta vuota per:', id, '— fallback Binance');
-      } catch(e) {
-        console.warn('CoinGecko errore:', e.message);
-      }
-      const binanceSymbol = asset.includes('ETH') ? 'ETHUSDT' : 'BTCUSDT';
-      const res2 = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + binanceSymbol);
-      const data2 = await res2.json();
-      return parseFloat(data2.price);
+      // Binance API diretta — CoinGecko non piu affidabile
+      const binanceSymbol = cryptoMap[asset];
+      const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + binanceSymbol);
+      const data = await res.json();
+      if (data && data.price) return parseFloat(data.price);
+      console.warn('Binance risposta vuota per:', binanceSymbol);
+      return null;
     }
 
     const twelveMap = {
@@ -232,9 +247,13 @@ async function getPrice(asset) {
     };
     if (twelveMap[asset]) {
       const symbol = twelveMap[asset];
-      const res = await fetch('https://api.twelvedata.com/price?symbol=' + symbol + '&apikey=demo');
-      const data = await res.json();
-      if (data && data.price) return parseFloat(data.price);
+      try {
+        const res = await fetch('https://api.twelvedata.com/price?symbol=' + symbol + '&apikey=demo');
+        const data = await res.json();
+        if (data && data.price) return parseFloat(data.price);
+      } catch(e) {
+        console.warn('Twelve Data errore per:', symbol, e.message);
+      }
     }
 
     const yahooMap = {
@@ -249,7 +268,7 @@ async function getPrice(asset) {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
       'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
-   if (yahooMap[asset]) {
+    if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
       try {
         const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d');
@@ -336,9 +355,9 @@ function buildReport(label, filtered) {
   }
   const wins = filtered.filter(p => p.result === 'WIN').length;
   const losses = filtered.filter(p => p.result === 'LOSS').length;
-  const totalPnl = filtered.reduce((a, p) => a + p.pnl_eur, 0);
-  const grossWin = filtered.filter(p => p.result === 'WIN').reduce((a, p) => a + p.pnl_eur, 0);
-  const grossLoss = filtered.filter(p => p.result === 'LOSS').reduce((a, p) => a + p.pnl_eur, 0);
+  const totalPnl = filtered.reduce((a, p) => a + parseFloat(p.pnl_eur || 0), 0);
+  const grossWin = filtered.filter(p => p.result === 'WIN').reduce((a, p) => a + parseFloat(p.pnl_eur || 0), 0);
+  const grossLoss = filtered.filter(p => p.result === 'LOSS').reduce((a, p) => a + parseFloat(p.pnl_eur || 0), 0);
   const winRate = ((wins / filtered.length) * 100).toFixed(1);
   const pf = grossLoss !== 0 ? (grossWin / Math.abs(grossLoss)).toFixed(2) : '∞';
   const pnlStr = totalPnl >= 0 ? '+€' + totalPnl.toFixed(2) : '-€' + Math.abs(totalPnl).toFixed(2);
@@ -439,6 +458,7 @@ async function checkPositions() {
         if (price <= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
         else if (price >= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
       }
+
       // Chiusura automatica dopo 7 giorni
       const ageHours = (new Date() - new Date(pos.openedAt)) / 3600000;
       if (ageHours >= 168 && result === null) {
@@ -461,6 +481,7 @@ async function checkPositions() {
         );
         continue;
       }
+
       if (result) {
         const priceDiff = result === 'WIN'
           ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
@@ -475,6 +496,44 @@ async function checkPositions() {
     } catch (e) {
       console.error('Errore check:', e.message);
     }
+  }
+}
+
+// === RESOCONTI AUTOMATICI ===
+function checkScheduledReports() {
+  const now = new Date();
+  const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
+  const h = itTime.getHours();
+  const m = itTime.getMinutes();
+  const d = itTime.getDate();
+  const dow = itTime.getDay();
+  const dayOfYear = Math.floor((itTime - new Date(itTime.getFullYear(), 0, 0)) / 86400000);
+
+  // Resoconto giornaliero alle 20:00
+  if (h === 20 && m < 2 && lastReportDay !== dayOfYear) {
+    lastReportDay = dayOfYear;
+    dbGetStats().then(trades => {
+      sendTelegram(buildReport('GIORNALIERO', getFiltered('day', trades)));
+      console.log('Resoconto giornaliero inviato');
+    });
+  }
+
+  // Resoconto settimanale ogni lunedi alle 09:00
+  if (dow === 1 && h === 9 && m < 2 && lastReportWeek !== dayOfYear) {
+    lastReportWeek = dayOfYear;
+    dbGetStats().then(trades => {
+      sendTelegram(buildReport('SETTIMANALE', getFiltered('week', trades)));
+      console.log('Resoconto settimanale inviato');
+    });
+  }
+
+  // Resoconto mensile il primo del mese alle 09:00
+  if (d === 1 && h === 9 && m < 2 && lastReportMonth !== itTime.getMonth()) {
+    lastReportMonth = itTime.getMonth();
+    dbGetStats().then(trades => {
+      sendTelegram(buildReport('MENSILE', getFiltered('month', trades)));
+      console.log('Resoconto mensile inviato');
+    });
   }
 }
 
@@ -502,7 +561,6 @@ async function pollTelegram() {
       } else if (text === '/chiudi tutto') {
         positions = [];
         reply = '🗑 <b>Tutte le posizioni cancellate dalla memoria.</b>\nNota: i trade aperti su Supabase restano registrati.';
-    
       } else if (text === '/testreport') {
         const now = new Date();
         const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
@@ -514,8 +572,6 @@ async function pollTelegram() {
           'Giorno settimana: ' + itTime.getDay() + '\n' +
           'lastReportDay: ' + lastReportDay + '\n' +
           '━━━━━━━━━━━━━━━━━━';
-      } else if (text === '/stats') {
-      
       } else if (text === '/stats') {
         const trades = await dbGetStats();
         reply = await buildStatsMessage(trades);
@@ -542,9 +598,9 @@ app.post('/webhook', async (req, res) => {
     }
 
     let assetUp = asset.toUpperCase();
-    // Normalizza simboli alternativi
     if (assetUp === 'US500') assetUp = 'PEPPERSTONE:US500';
     if (assetUp === 'US100') assetUp = 'FOREXCOM:NAS100';
+
     const dir = direction.toUpperCase();
     const entryNum = roundPrice(parseFloat(entry), assetUp);
 
@@ -576,55 +632,8 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
+
 const PORT = process.env.PORT || 3000;
-
-
-let lastReportDay = -1;
-let lastReportWeek = -1;
-let lastReportMonth = -1;
-
-function checkScheduledReports() {
-  const now = new Date();
-  const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
-  const h = itTime.getHours();
-  const m = itTime.getMinutes();
-  const d = itTime.getDate();
-  const dow = itTime.getDay();
-  const dayOfYear = Math.floor((itTime - new Date(itTime.getFullYear(), 0, 0)) / 86400000);
-
-  // Resoconto giornaliero alle 20:00 — una volta al giorno
-   if (h === 20 && m < 2 && lastReportDay !== dayOfYear) {
-    lastReportDay = dayOfYear;
-    dbGetStats().then(trades => {
-      const filtered = getFiltered('day', trades);
-      sendTelegram(buildReport('GIORNALIERO', filtered));
-      console.log('Resoconto giornaliero inviato');
-    });
-  }
-
-  // Resoconto settimanale ogni lunedì alle 09:00
-  if (dow === 1 && h === 9 && m < 2 && lastReportWeek !== dayOfYear) {
-    lastReportWeek = dayOfYear;
-    dbGetStats().then(trades => {
-      const filtered = getFiltered('week', trades);
-      sendTelegram(buildReport('SETTIMANALE', filtered));
-      console.log('Resoconto settimanale inviato');
-    });
-  }
-
-  // Resoconto mensile il primo del mese alle 09:00
-  if (d === 1 && h === 9 && m < 2 && lastReportMonth !== itTime.getMonth()) {
-    lastReportMonth = itTime.getMonth();
-    dbGetStats().then(trades => {
-      const filtered = getFiltered('month', trades);
-      sendTelegram(buildReport('MENSILE', filtered));
-      console.log('Resoconto mensile inviato');
-    });
-  }
-}
-
-  
-
 app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
   await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
@@ -632,4 +641,6 @@ app.listen(PORT, async () => {
   setInterval(checkPositions, 3 * 60 * 1000);
   setInterval(pollTelegram, 3000);
   setInterval(checkScheduledReports, 60 * 1000);
+  setInterval(pingSupabase, 60 * 60 * 1000);
+  pingSupabase();
 });
