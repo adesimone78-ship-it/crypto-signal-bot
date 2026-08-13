@@ -565,7 +565,10 @@ app.get('/', (req, res) => res.send('Bot attivo ✅'));
 const PORT = process.env.PORT || 3000;
 
 
-// === RESOCONTI AUTOMATICI ===
+let lastReportDay = -1;
+let lastReportWeek = -1;
+let lastReportMonth = -1;
+
 function checkScheduledReports() {
   const now = new Date();
   const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
@@ -573,6 +576,38 @@ function checkScheduledReports() {
   const m = itTime.getMinutes();
   const d = itTime.getDate();
   const dow = itTime.getDay();
+  const dayOfYear = Math.floor((itTime - new Date(itTime.getFullYear(), 0, 0)) / 86400000);
+
+  // Resoconto giornaliero alle 20:00 — una volta al giorno
+  if (h === 20 && m < 2 && lastReportDay !== dayOfYear) {
+    lastReportDay = dayOfYear;
+    dbGetStats().then(trades => {
+      const filtered = getFiltered('day', trades);
+      sendTelegram(buildReport('GIORNALIERO', filtered));
+      console.log('Resoconto giornaliero inviato');
+    });
+  }
+
+  // Resoconto settimanale ogni lunedì alle 09:00
+  if (dow === 1 && h === 9 && m < 2 && lastReportWeek !== dayOfYear) {
+    lastReportWeek = dayOfYear;
+    dbGetStats().then(trades => {
+      const filtered = getFiltered('week', trades);
+      sendTelegram(buildReport('SETTIMANALE', filtered));
+      console.log('Resoconto settimanale inviato');
+    });
+  }
+
+  // Resoconto mensile il primo del mese alle 09:00
+  if (d === 1 && h === 9 && m < 2 && lastReportMonth !== itTime.getMonth()) {
+    lastReportMonth = itTime.getMonth();
+    dbGetStats().then(trades => {
+      const filtered = getFiltered('month', trades);
+      sendTelegram(buildReport('MENSILE', filtered));
+      console.log('Resoconto mensile inviato');
+    });
+  }
+}
 
   // Resoconto giornaliero alle 20:00
   if (h === 20 && m === 0) {
