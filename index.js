@@ -609,31 +609,7 @@ function checkScheduledReports() {
   }
 }
 
-  // Resoconto giornaliero alle 20:00
-  if (h === 20 && m === 0) {
-    dbGetStats().then(trades => {
-      const filtered = getFiltered('day', trades);
-      sendTelegram(buildReport('GIORNALIERO', filtered));
-    });
-  }
-
-  // Resoconto settimanale ogni lunedì alle 09:00
-  if (dow === 1 && h === 9 && m === 0) {
-    dbGetStats().then(trades => {
-      const filtered = getFiltered('week', trades);
-      sendTelegram(buildReport('SETTIMANALE', filtered));
-    });
-  }
-
-  // Resoconto mensile il primo del mese alle 09:00
-  if (d === 1 && h === 9 && m === 0) {
-    dbGetStats().then(trades => {
-      const filtered = getFiltered('month', trades);
-      sendTelegram(buildReport('MENSILE', filtered));
-    });
-  }
-}
-
+  
 
 app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
