@@ -502,6 +502,20 @@ async function pollTelegram() {
       } else if (text === '/chiudi tutto') {
         positions = [];
         reply = '🗑 <b>Tutte le posizioni cancellate dalla memoria.</b>\nNota: i trade aperti su Supabase restano registrati.';
+    
+      } else if (text === '/testreport') {
+        const now = new Date();
+        const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
+        reply = '🔧 <b>TEST SCHEDULER</b>\n' +
+          '━━━━━━━━━━━━━━━━━━\n' +
+          'Ora server UTC: ' + now.toISOString() + '\n' +
+          'Ora italiana: ' + itTime.toLocaleString('it-IT') + '\n' +
+          'Ore: ' + itTime.getHours() + ' | Minuti: ' + itTime.getMinutes() + '\n' +
+          'Giorno settimana: ' + itTime.getDay() + '\n' +
+          'lastReportDay: ' + lastReportDay + '\n' +
+          '━━━━━━━━━━━━━━━━━━';
+      } else if (text === '/stats') {
+      
       } else if (text === '/stats') {
         const trades = await dbGetStats();
         reply = await buildStatsMessage(trades);
