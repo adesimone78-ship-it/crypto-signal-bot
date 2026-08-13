@@ -593,7 +593,7 @@ function checkScheduledReports() {
   const dayOfYear = Math.floor((itTime - new Date(itTime.getFullYear(), 0, 0)) / 86400000);
 
   // Resoconto giornaliero alle 20:00 — una volta al giorno
-  if (h === 20 && m < 2 && lastReportDay !== dayOfYear) {
+ if (h === 0 && m >= 15 && m < 17 && lastReportDay !== dayOfYear) {
     lastReportDay = dayOfYear;
     dbGetStats().then(trades => {
       const filtered = getFiltered('day', trades);
