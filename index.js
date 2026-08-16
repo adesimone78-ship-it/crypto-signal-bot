@@ -169,6 +169,36 @@ async function pingSupabase() {
   }
 }
 
+// Calcola win rate globale e per asset dal database
+async function getWinRates(asset) {
+  try {
+    const trades = await dbGetStats();
+    if (!Array.isArray(trades)) return null;
+    const closed = trades.filter(t => t.result !== null && t.result !== undefined);
+    if (closed.length === 0) return null;
+
+    const globalWins = closed.filter(t => t.result === 'WIN').length;
+    const globalRate = ((globalWins / closed.length) * 100).toFixed(1);
+
+    const assetTrades = closed.filter(t => t.asset === asset);
+    let assetRate = null;
+    if (assetTrades.length > 0) {
+      const assetWins = assetTrades.filter(t => t.result === 'WIN').length;
+      assetRate = ((assetWins / assetTrades.length) * 100).toFixed(1);
+    }
+
+    return {
+      globalRate,
+      globalCount: closed.length,
+      assetRate,
+      assetCount: assetTrades.length
+    };
+  } catch (e) {
+    console.error('Errore getWinRates:', e.message);
+    return null;
+  }
+}
+
 function getAssetSuffix(asset) {
   const fiat = [
     'XAU', 'XAGUSD', 'NAS100', 'US100', 'USOIL', 'EURUSD', 'GBPUSD',
@@ -232,7 +262,6 @@ async function getPrice(asset) {
       SOL: 'SOLUSDT', BNB: 'BNBUSDT', XRP: 'XRPUSDT'
     };
     if (cryptoMap[asset]) {
-      // Binance API diretta — CoinGecko non piu affidabile
       const binanceSymbol = cryptoMap[asset];
       const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + binanceSymbol);
       const data = await res.json();
@@ -306,7 +335,7 @@ async function sendTelegram(text) {
   }
 }
 
-function buildEntryMessage(asset, direction, entry, lv) {
+function buildEntryMessage(asset, direction, entry, lv, stats) {
   const isLong = direction === 'LONG';
   const emoji = isLong ? '📈' : '📉';
   const arrow = isLong ? '▲' : '▼';
@@ -314,7 +343,22 @@ function buildEntryMessage(asset, direction, entry, lv) {
   const tick = roundMap[asset] || roundMap.DEFAULT;
   const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
   const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-  return '🤖 <b>SIGNAL BOT — ' + asset + '/' + suffix + '</b>\n' +
+  const shortName = asset.split(':').pop();
+
+  let statsBlock = '';
+  if (stats) {
+    statsBlock = '📊 <b>PERFORMANCE BOT</b>\n';
+    statsBlock += '🌍 Globale: <b>' + stats.globalRate + '%</b> win (' + stats.globalCount + ' trade)\n';
+    if (stats.assetRate !== null) {
+      statsBlock += '🎯 ' + shortName + ': <b>' + stats.assetRate + '%</b> win (' + stats.assetCount + ' trade)\n';
+    } else {
+      statsBlock += '🎯 ' + shortName + ': primo trade su questo asset\n';
+    }
+    statsBlock += '━━━━━━━━━━━━━━━━━━\n';
+  }
+
+  return statsBlock +
+    '🤖 <b>SIGNAL BOT — ' + asset + '/' + suffix + '</b>\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
     emoji + ' Direzione: ' + arrow + ' ' + direction + '\n' +
     '🕐 Orario: ' + nowIT() + '\n' +
@@ -619,11 +663,12 @@ app.post('/webhook', async (req, res) => {
       return res.json({ ok: false, skipped: true, reason: 'SL anomalo: ' + lv.sl });
     }
 
+    const stats = await getWinRates(assetUp);
     const pos = { asset: assetUp, direction: finalDir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() };
     const dbId = await dbInsertTrade(pos, lv);
     pos.dbId = dbId;
     positions.push(pos);
-    await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv));
+    await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv, stats));
     res.json({ ok: true });
   } catch (e) {
     console.error('Errore webhook:', e.message);
