@@ -52,6 +52,25 @@ const atrMap = {
   DEFAULT: 0.018
 };
 
+// === SL MINIMO GARANTITO PER ASSET ===
+// Se lo SL calcolato (da ATR o da TEMA) e piu stretto di questa
+// percentuale, viene allargato automaticamente. Evita stop
+// soffocanti che vengono colpiti dal rumore di mercato.
+const minSlMap = {
+  BTC: 0.020, 'CMCMARKETS:BTCUSD': 0.020,
+  ETH: 0.020, 'CMCMARKETS:ETHUSD': 0.020,
+  SOL: 0.025,
+  XAU: 0.006, 'CMCMARKETS:GOLD': 0.006, 'CMCMARKETS:GOLDQ2026': 0.006,
+  XAGUSD: 0.012, 'CMCMARKETS:SILVER': 0.012, 'CMCMARKETS:SILVERU2026': 0.012,
+  SILVERN2026: 0.012, 'CMCMARKETS:SILVERN2026': 0.012,
+  USOIL: 0.015, 'EASYMARKETS:OILUSD': 0.015,
+  NAS100: 0.008, US100: 0.008, 'FOREXCOM:NAS100': 0.008,
+  'PEPPERSTONE:US500': 0.008, US500: 0.008,
+  'NASDAQ:TSLA': 0.020, TSLA: 0.020,
+  'NASDAQ:NVDA': 0.020, NVDA: 0.020,
+  DEFAULT: 0.010
+};
+
 const roundMap = {
   BTC: 10, 'CMCMARKETS:BTCUSD': 10,
   ETH: 1, 'CMCMARKETS:ETHUSD': 1,
@@ -150,7 +169,6 @@ async function dbGetStats() {
   }
 }
 
-// Ping Supabase ogni ora per evitare la pausa automatica del piano free
 async function pingSupabase() {
   try {
     const res = await fetch(SUPABASE_URL + '/rest/v1/trades?select=id&limit=1', {
@@ -169,7 +187,6 @@ async function pingSupabase() {
   }
 }
 
-// Calcola win rate globale e per asset dal database
 async function getWinRates(asset) {
   try {
     const trades = await dbGetStats();
@@ -221,6 +238,7 @@ function nowIT() {
 function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   const { margin, order } = marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
   let sl, tp;
+  let slAdjusted = false;
   const slNum = slOverride !== undefined && slOverride !== null ? parseFloat(slOverride) : null;
   const tpNum = tpOverride !== undefined && tpOverride !== null ? parseFloat(tpOverride) : null;
 
@@ -241,12 +259,35 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
     tp = direction === 'LONG' ? roundPrice(entry + tpDist, asset) : roundPrice(entry - tpDist, asset);
   }
 
+  // Direzione reale determinata dalla posizione di SL rispetto a entry
   const correctedDirection = sl > entry ? 'SHORT' : 'LONG';
+
+  // === SL MINIMO GARANTITO ===
+  // Se lo SL e troppo vicino all'entry lo allarghiamo al minimo
+  // e ricalcoliamo il TP per mantenere il R:R 3:1
+  const minSlPct = minSlMap[asset] || minSlMap.DEFAULT;
+  const minSlDist = entry * minSlPct;
+  const currentSlDist = Math.abs(entry - sl);
+
+  if (currentSlDist < minSlDist) {
+    const oldSl = sl;
+    sl = correctedDirection === 'LONG'
+      ? roundPrice(entry - minSlDist, asset)
+      : roundPrice(entry + minSlDist, asset);
+    const newSlDist = Math.abs(entry - sl);
+    tp = correctedDirection === 'LONG'
+      ? roundPrice(entry + newSlDist * 3, asset)
+      : roundPrice(entry - newSlDist * 3, asset);
+    slAdjusted = true;
+    console.log('SL allargato al minimo:', oldSl, '->', sl,
+      '(min ' + (minSlPct * 100).toFixed(2) + '%) | nuovo TP:', tp, '| asset:', asset);
+  }
+
   const slDistFinal = Math.abs(entry - sl);
   const tpDistFinal = Math.abs(tp - entry);
 
   return {
-    sl, tp, margin, order, correctedDirection,
+    sl, tp, margin, order, correctedDirection, slAdjusted,
     slEur: +(slDistFinal / entry * order).toFixed(2),
     tpEur: +(tpDistFinal / entry * order).toFixed(2),
     slPct: +(slDistFinal / entry * 100).toFixed(2),
@@ -357,16 +398,19 @@ function buildEntryMessage(asset, direction, entry, lv, stats) {
     statsBlock += '━━━━━━━━━━━━━━━━━━\n';
   }
 
+  const slNote = lv.slAdjusted ? '  ⚙️' : '';
+
   return statsBlock +
     '🤖 <b>SIGNAL BOT — ' + asset + '/' + suffix + '</b>\n' +
     '━━━━━━━━━━━━━━━━━━\n' +
     emoji + ' Direzione: ' + arrow + ' ' + direction + '\n' +
     '🕐 Orario: ' + nowIT() + '\n' +
     '💰 Ingresso:    $' + fmt(entry) + '\n' +
-    '🛑 Stop Loss:   $' + fmt(lv.sl) + '  (-' + lv.slPct + '% / -€' + lv.slEur + ')\n' +
+    '🛑 Stop Loss:   $' + fmt(lv.sl) + '  (-' + lv.slPct + '% / -€' + lv.slEur + ')' + slNote + '\n' +
     '🎯 Take Profit: $' + fmt(lv.tp) + '  (+' + lv.tpPct + '% / +€' + lv.tpEur + ')\n' +
     '⚖️ R:R → 3 : 1\n' +
     '💼 Margine: €' + lv.margin.toLocaleString('it-IT') + ' | Ordine: €' + lv.order.toLocaleString('it-IT') + '\n' +
+    (lv.slAdjusted ? '⚙️ SL allargato al minimo di sicurezza\n' : '') +
     '━━━━━━━━━━━━━━━━━━\n' +
     '⚠️ Non è consulenza finanziaria.';
 }
@@ -553,7 +597,6 @@ function checkScheduledReports() {
   const dow = itTime.getDay();
   const dayOfYear = Math.floor((itTime - new Date(itTime.getFullYear(), 0, 0)) / 86400000);
 
-  // Resoconto giornaliero alle 20:00
   if (h === 20 && m < 2 && lastReportDay !== dayOfYear) {
     lastReportDay = dayOfYear;
     dbGetStats().then(trades => {
@@ -562,7 +605,6 @@ function checkScheduledReports() {
     });
   }
 
-  // Resoconto settimanale ogni lunedi alle 09:00
   if (dow === 1 && h === 9 && m < 2 && lastReportWeek !== dayOfYear) {
     lastReportWeek = dayOfYear;
     dbGetStats().then(trades => {
@@ -571,7 +613,6 @@ function checkScheduledReports() {
     });
   }
 
-  // Resoconto mensile il primo del mese alle 09:00
   if (d === 1 && h === 9 && m < 2 && lastReportMonth !== itTime.getMonth()) {
     lastReportMonth = itTime.getMonth();
     dbGetStats().then(trades => {
@@ -605,6 +646,18 @@ async function pollTelegram() {
       } else if (text === '/chiudi tutto') {
         positions = [];
         reply = '🗑 <b>Tutte le posizioni cancellate dalla memoria.</b>\nNota: i trade aperti su Supabase restano registrati.';
+      } else if (text === '/slmin') {
+        let msg = '⚙️ <b>SL MINIMI CONFIGURATI</b>\n━━━━━━━━━━━━━━━━━━\n';
+        const shown = new Set();
+        for (const [k, v] of Object.entries(minSlMap)) {
+          if (k === 'DEFAULT') continue;
+          const short = k.split(':').pop();
+          if (shown.has(short)) continue;
+          shown.add(short);
+          msg += '• ' + short + ': <b>' + (v * 100).toFixed(2) + '%</b>\n';
+        }
+        msg += '━━━━━━━━━━━━━━━━━━';
+        reply = msg;
       } else if (text === '/testreport') {
         const now = new Date();
         const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
