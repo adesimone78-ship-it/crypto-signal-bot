@@ -11,6 +11,11 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const MARGIN_DEFAULT = 274.10;
 const ORDER_DEFAULT = 548.20;
 
+// === FILTRO TREND MA50 ===
+// true  = i segnali contro-trend vengono bloccati ma tracciati in ombra
+// false = tutti i segnali passano (il filtro non blocca nulla)
+const TREND_FILTER_ENABLED = true;
+
 const marginMap = {
   BTC:                           { margin: 274.10,   order: 548.20    },
   'CMCMARKETS:BTCUSD':           { margin: 268.94,   order: 537.87    },
@@ -52,10 +57,7 @@ const atrMap = {
   DEFAULT: 0.018
 };
 
-// === SL MINIMO GARANTITO PER ASSET ===
-// Se lo SL calcolato (da ATR o da TEMA) e piu stretto di questa
-// percentuale, viene allargato automaticamente. Evita stop
-// soffocanti che vengono colpiti dal rumore di mercato.
+// SL minimo garantito per asset
 const minSlMap = {
   BTC: 0.020, 'CMCMARKETS:BTCUSD': 0.020,
   ETH: 0.020, 'CMCMARKETS:ETHUSD': 0.020,
@@ -90,7 +92,8 @@ function roundPrice(price, asset) {
   return Math.round(price / tick) * tick;
 }
 
-let positions = [];
+let positions = [];        // posizioni reali (notificate su Telegram)
+let shadowPositions = [];  // segnali filtrati, tracciati in silenzio
 let closedPositions = [];
 let lastUpdateId = 0;
 let processedIds = new Set();
@@ -99,7 +102,7 @@ let lastReportWeek = -1;
 let lastReportMonth = -1;
 
 // === SUPABASE ===
-async function dbInsertTrade(pos, lv) {
+async function dbInsertTrade(pos, lv, isFiltered) {
   try {
     const res = await fetch(SUPABASE_URL + '/rest/v1/trades', {
       method: 'POST',
@@ -117,12 +120,13 @@ async function dbInsertTrade(pos, lv) {
         tp: pos.tp,
         margin: lv.margin,
         order_eur: lv.order,
-        opened_at: pos.openedAt
+        opened_at: pos.openedAt,
+        filtered: isFiltered === true
       })
     });
     const data = await res.json();
     if (data && data[0]) {
-      console.log('Trade salvato su Supabase, id:', data[0].id);
+      console.log((isFiltered ? 'Trade OMBRA' : 'Trade') + ' salvato su Supabase, id:', data[0].id);
       return data[0].id;
     }
   } catch (e) {
@@ -148,7 +152,7 @@ async function dbCloseTrade(dbId, closePrice, result, pnlEur) {
         pnl_eur: pnlEur
       })
     });
-    console.log('Trade chiuso su Supabase, id:', dbId);
+    console.log('Trade chiuso su Supabase, id:', dbId, '->', result);
   } catch (e) {
     console.error('Errore Supabase update:', e.message);
   }
@@ -177,21 +181,21 @@ async function pingSupabase() {
         'Authorization': 'Bearer ' + SUPABASE_KEY
       }
     });
-    if (res.ok) {
-      console.log('Supabase ping ok');
-    } else {
-      console.warn('Supabase ping fallito, status:', res.status);
-    }
+    if (res.ok) console.log('Supabase ping ok');
+    else console.warn('Supabase ping fallito, status:', res.status);
   } catch (e) {
     console.error('Errore ping Supabase:', e.message);
   }
 }
 
+// Win rate calcolato SOLO sui trade reali (filtered = false)
 async function getWinRates(asset) {
   try {
     const trades = await dbGetStats();
     if (!Array.isArray(trades)) return null;
-    const closed = trades.filter(t => t.result !== null && t.result !== undefined);
+    const closed = trades.filter(t =>
+      t.result !== null && t.result !== undefined && t.filtered !== true
+    );
     if (closed.length === 0) return null;
 
     const globalWins = closed.filter(t => t.result === 'WIN').length;
@@ -204,12 +208,7 @@ async function getWinRates(asset) {
       assetRate = ((assetWins / assetTrades.length) * 100).toFixed(1);
     }
 
-    return {
-      globalRate,
-      globalCount: closed.length,
-      assetRate,
-      assetCount: assetTrades.length
-    };
+    return { globalRate, globalCount: closed.length, assetRate, assetCount: assetTrades.length };
   } catch (e) {
     console.error('Errore getWinRates:', e.message);
     return null;
@@ -233,6 +232,12 @@ function getAssetSuffix(asset) {
 
 function nowIT() {
   return new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function fmtAsset(n, asset) {
+  const tick = roundMap[asset] || roundMap.DEFAULT;
+  const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
+  return n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
 function calcLevels(entry, direction, asset, slOverride, tpOverride) {
@@ -259,12 +264,9 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
     tp = direction === 'LONG' ? roundPrice(entry + tpDist, asset) : roundPrice(entry - tpDist, asset);
   }
 
-  // Direzione reale determinata dalla posizione di SL rispetto a entry
   const correctedDirection = sl > entry ? 'SHORT' : 'LONG';
 
-  // === SL MINIMO GARANTITO ===
-  // Se lo SL e troppo vicino all'entry lo allarghiamo al minimo
-  // e ricalcoliamo il TP per mantenere il R:R 3:1
+  // SL minimo garantito
   const minSlPct = minSlMap[asset] || minSlMap.DEFAULT;
   const minSlDist = entry * minSlPct;
   const currentSlDist = Math.abs(entry - sl);
@@ -376,14 +378,12 @@ async function sendTelegram(text) {
   }
 }
 
-function buildEntryMessage(asset, direction, entry, lv, stats) {
+function buildEntryMessage(asset, direction, entry, lv, stats, trendValue) {
   const isLong = direction === 'LONG';
   const emoji = isLong ? '📈' : '📉';
   const arrow = isLong ? '▲' : '▼';
   const suffix = getAssetSuffix(asset);
-  const tick = roundMap[asset] || roundMap.DEFAULT;
-  const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
-  const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const fmt = (n) => fmtAsset(n, asset);
   const shortName = asset.split(':').pop();
 
   let statsBlock = '';
@@ -399,6 +399,9 @@ function buildEntryMessage(asset, direction, entry, lv, stats) {
   }
 
   const slNote = lv.slAdjusted ? '  ⚙️' : '';
+  const trendLine = (trendValue !== null && !isNaN(trendValue) && trendValue > 0)
+    ? '📐 MA50: $' + fmt(trendValue) + ' — trend ' + (entry > trendValue ? 'RIALZISTA ✅' : 'RIBASSISTA ✅') + '\n'
+    : '';
 
   return statsBlock +
     '🤖 <b>SIGNAL BOT — ' + asset + '/' + suffix + '</b>\n' +
@@ -409,6 +412,7 @@ function buildEntryMessage(asset, direction, entry, lv, stats) {
     '🛑 Stop Loss:   $' + fmt(lv.sl) + '  (-' + lv.slPct + '% / -€' + lv.slEur + ')' + slNote + '\n' +
     '🎯 Take Profit: $' + fmt(lv.tp) + '  (+' + lv.tpPct + '% / +€' + lv.tpEur + ')\n' +
     '⚖️ R:R → 3 : 1\n' +
+    trendLine +
     '💼 Margine: €' + lv.margin.toLocaleString('it-IT') + ' | Ordine: €' + lv.order.toLocaleString('it-IT') + '\n' +
     (lv.slAdjusted ? '⚙️ SL allargato al minimo di sicurezza\n' : '') +
     '━━━━━━━━━━━━━━━━━━\n' +
@@ -419,9 +423,7 @@ function buildCloseMessage(pos, result, closePrice, pnlEur) {
   const emoji = result === 'WIN' ? '✅' : '❌';
   const pnlStr = pnlEur >= 0 ? '+€' + pnlEur.toFixed(2) : '-€' + Math.abs(pnlEur).toFixed(2);
   const suffix = getAssetSuffix(pos.asset);
-  const tick = roundMap[pos.asset] || roundMap.DEFAULT;
-  const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
-  const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const fmt = (n) => fmtAsset(n, pos.asset);
   const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
   const hours = Math.floor(duration / 60);
   const mins = duration % 60;
@@ -461,61 +463,128 @@ function buildReport(label, filtered) {
     '━━━━━━━━━━━━━━━━━━';
 }
 
+function statBlock(list) {
+  const wins = list.filter(t => t.result === 'WIN').length;
+  const losses = list.filter(t => t.result === 'LOSS').length;
+  const pnl = list.reduce((a, t) => a + parseFloat(t.pnl_eur || 0), 0);
+  const rate = list.length > 0 ? ((wins / list.length) * 100).toFixed(1) : '0.0';
+  return { wins, losses, pnl, rate, count: list.length };
+}
+
 async function buildStatsMessage(trades) {
-  const closed = trades.filter(t => t.result !== null);
-  if (closed.length === 0) return '📊 <b>STATISTICHE</b>\n━━━━━━━━━━━━━━━━━━\nNessun trade chiuso nel database.';
+  if (!Array.isArray(trades)) return '📊 Errore lettura database.';
 
-  const byAsset = {};
-  for (const t of closed) {
-    if (!byAsset[t.asset]) byAsset[t.asset] = { wins: 0, losses: 0, pnl: 0 };
-    if (t.result === 'WIN') byAsset[t.asset].wins++;
-    else byAsset[t.asset].losses++;
-    byAsset[t.asset].pnl += parseFloat(t.pnl_eur || 0);
+  const real = trades.filter(t => t.result !== null && t.filtered !== true);
+  const shadow = trades.filter(t => t.result !== null && t.filtered === true);
+
+  if (real.length === 0 && shadow.length === 0) {
+    return '📊 <b>STATISTICHE</b>\n━━━━━━━━━━━━━━━━━━\nNessun trade chiuso nel database.';
   }
 
-  const totalWins = closed.filter(t => t.result === 'WIN').length;
-  const totalLosses = closed.filter(t => t.result === 'LOSS').length;
-  const totalPnl = closed.reduce((a, t) => a + parseFloat(t.pnl_eur || 0), 0);
-  const winRate = ((totalWins / closed.length) * 100).toFixed(1);
+  const r = statBlock(real);
+  let msg = '📊 <b>STATISTICHE — TRADE REALI</b>\n━━━━━━━━━━━━━━━━━━\n';
+  msg += '📈 Trade totali: ' + r.count + '\n';
+  msg += '✅ Win: ' + r.wins + ' | ❌ Loss: ' + r.losses + '\n';
+  msg += '🎯 Win Rate: <b>' + r.rate + '%</b>\n';
+  msg += '💶 P&L Totale: <b>' + (r.pnl >= 0 ? '+' : '') + '€' + r.pnl.toFixed(2) + '</b>\n';
 
-  let msg = '📊 <b>STATISTICHE COMPLETE</b>\n━━━━━━━━━━━━━━━━━━\n';
-  msg += '📈 Trade totali: ' + closed.length + '\n';
-  msg += '✅ Win: ' + totalWins + ' | ❌ Loss: ' + totalLosses + '\n';
-  msg += '🎯 Win Rate: ' + winRate + '%\n';
-  msg += '💶 P&L Totale: <b>' + (totalPnl >= 0 ? '+' : '') + '€' + totalPnl.toFixed(2) + '</b>\n';
+  if (real.length > 0) {
+    const byAsset = {};
+    for (const t of real) {
+      if (!byAsset[t.asset]) byAsset[t.asset] = { wins: 0, losses: 0, pnl: 0 };
+      if (t.result === 'WIN') byAsset[t.asset].wins++;
+      else byAsset[t.asset].losses++;
+      byAsset[t.asset].pnl += parseFloat(t.pnl_eur || 0);
+    }
+    msg += '━━━━━━━━━━━━━━━━━━\n<b>Per asset:</b>\n';
+    for (const [asset, s] of Object.entries(byAsset)) {
+      const tot = s.wins + s.losses;
+      const wr = ((s.wins / tot) * 100).toFixed(0);
+      const pnlStr = s.pnl >= 0 ? '+€' + s.pnl.toFixed(2) : '-€' + Math.abs(s.pnl).toFixed(2);
+      msg += '• <b>' + asset.split(':').pop() + '</b>: ' + tot + ' trade | ' + wr + '% | ' + pnlStr + '\n';
+    }
+  }
+
+  // === CONFRONTO CON I SEGNALI FILTRATI ===
   msg += '━━━━━━━━━━━━━━━━━━\n';
-  msg += '<b>Per asset:</b>\n';
+  msg += '🚫 <b>SEGNALI FILTRATI (ombra)</b>\n';
+  msg += 'Filtro MA50: ' + (TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO') + '\n';
 
-  for (const [asset, s] of Object.entries(byAsset)) {
-    const tot = s.wins + s.losses;
-    const wr = ((s.wins / tot) * 100).toFixed(0);
-    const pnlStr = s.pnl >= 0 ? '+€' + s.pnl.toFixed(2) : '-€' + Math.abs(s.pnl).toFixed(2);
-    msg += '• <b>' + asset + '</b>: ' + tot + ' trade | ' + wr + '% win | ' + pnlStr + '\n';
+  if (shadow.length === 0) {
+    msg += 'Nessun segnale filtrato ancora concluso.\n';
+  } else {
+    const s = statBlock(shadow);
+    msg += '📈 Filtrati conclusi: ' + s.count + '\n';
+    msg += '✅ Sarebbero stati Win: ' + s.wins + ' | ❌ Loss: ' + s.losses + '\n';
+    msg += '🎯 Win Rate ombra: <b>' + s.rate + '%</b>\n';
+    msg += '💶 P&L evitato: <b>' + (s.pnl >= 0 ? '+' : '') + '€' + s.pnl.toFixed(2) + '</b>\n';
+
+    msg += '━━━━━━━━━━━━━━━━━━\n';
+    msg += '⚖️ <b>VERDETTO FILTRO</b>\n';
+    if (s.pnl < 0) {
+      msg += '✅ Il filtro ha EVITATO una perdita di €' + Math.abs(s.pnl).toFixed(2) + '\n';
+    } else if (s.pnl > 0) {
+      msg += '⚠️ Il filtro ha SCARTATO un profitto di €' + s.pnl.toFixed(2) + '\n';
+    } else {
+      msg += 'Impatto neutro finora.\n';
+    }
+
+    // Win rate combinato: come sarebbe senza filtro
+    const all = real.concat(shadow);
+    const a = statBlock(all);
+    msg += '📊 Senza filtro sarebbe: ' + a.rate + '% win su ' + a.count + ' trade\n';
+    msg += '📊 Con filtro attuale:   ' + r.rate + '% win su ' + r.count + ' trade\n';
+    const delta = (parseFloat(r.rate) - parseFloat(a.rate)).toFixed(1);
+    msg += '📐 Differenza win rate: ' + (delta >= 0 ? '+' : '') + delta + ' punti\n';
+
+    if (s.count < 10) {
+      msg += '\n⏳ Solo ' + s.count + ' trade ombra: dati ancora non significativi.\n';
+    }
   }
+
   msg += '━━━━━━━━━━━━━━━━━━';
   return msg;
 }
 
 function buildOpenPositions() {
-  if (positions.length === 0) {
+  const totale = positions.length + shadowPositions.length;
+  if (totale === 0) {
     return '📋 <b>POSIZIONI APERTE</b>\n━━━━━━━━━━━━━━━━━━\nNessuna posizione aperta.';
   }
+
   let msg = '📋 <b>POSIZIONI APERTE (' + positions.length + ')</b>\n━━━━━━━━━━━━━━━━━━\n';
-  positions.forEach((pos, i) => {
-    const suffix = getAssetSuffix(pos.asset);
-    const tick = roundMap[pos.asset] || roundMap.DEFAULT;
-    const decimals = tick < 1 ? (tick.toString().split('.')[1] || '').length : 0;
-    const fmt = (n) => n.toLocaleString('it-IT', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-    const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
-    const hours = Math.floor(duration / 60);
-    const mins = duration % 60;
-    const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
-    msg += (i + 1) + '. <b>' + pos.asset + '/' + suffix + '</b> ' + pos.direction + '\n';
-    msg += '   💰 Entry: $' + fmt(pos.entry) + '\n';
-    msg += '   🛑 SL: $' + fmt(pos.sl) + ' | 🎯 TP: $' + fmt(pos.tp) + '\n';
-    msg += '   ⏱ Aperta da: ' + durStr + '\n';
-    if (i < positions.length - 1) msg += '─────────────────\n';
-  });
+  if (positions.length === 0) {
+    msg += 'Nessuna posizione reale aperta.\n';
+  } else {
+    positions.forEach((pos, i) => {
+      const suffix = getAssetSuffix(pos.asset);
+      const fmt = (n) => fmtAsset(n, pos.asset);
+      const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
+      const hours = Math.floor(duration / 60);
+      const mins = duration % 60;
+      const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
+      msg += (i + 1) + '. <b>' + pos.asset + '/' + suffix + '</b> ' + pos.direction + '\n';
+      msg += '   💰 Entry: $' + fmt(pos.entry) + '\n';
+      msg += '   🛑 SL: $' + fmt(pos.sl) + ' | 🎯 TP: $' + fmt(pos.tp) + '\n';
+      msg += '   ⏱ Aperta da: ' + durStr + '\n';
+      if (i < positions.length - 1) msg += '─────────────────\n';
+    });
+  }
+
+  if (shadowPositions.length > 0) {
+    msg += '━━━━━━━━━━━━━━━━━━\n';
+    msg += '🚫 <b>OMBRA — filtrate (' + shadowPositions.length + ')</b>\n';
+    shadowPositions.forEach((pos) => {
+      const fmt = (n) => fmtAsset(n, pos.asset);
+      const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
+      const hours = Math.floor(duration / 60);
+      const mins = duration % 60;
+      const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
+      msg += '• ' + pos.asset.split(':').pop() + ' ' + pos.direction +
+        ' @ $' + fmt(pos.entry) + ' — ' + durStr + '\n';
+    });
+  }
+
   msg += '━━━━━━━━━━━━━━━━━━';
   return msg;
 }
@@ -527,62 +596,97 @@ function getFiltered(type, trades) {
   else if (type === 'week') from.setDate(now.getDate() - 7);
   else if (type === 'month') from.setMonth(now.getMonth() - 1);
   else if (type === 'year') from.setFullYear(now.getFullYear() - 1);
-  return trades.filter(p => new Date(p.closed_at || p.closedAt) >= from && p.result !== null);
+  return trades.filter(p =>
+    new Date(p.closed_at || p.closedAt) >= from &&
+    p.result !== null &&
+    p.filtered !== true
+  );
+}
+
+// Valuta una singola posizione contro il prezzo corrente.
+// Ritorna null se ancora aperta, altrimenti { result, closePrice, pnlEur }
+function evaluatePosition(pos, price) {
+  let result = null;
+  let closePrice = price;
+
+  if (pos.direction === 'LONG') {
+    if (price >= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
+    else if (price <= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
+  } else {
+    if (price <= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
+    else if (price >= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
+  }
+
+  const ageHours = (new Date() - new Date(pos.openedAt)) / 3600000;
+  const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
+
+  // Timeout 7 giorni
+  if (result === null && ageHours >= 168) {
+    const priceDiff = pos.direction === 'LONG' ? price - pos.entry : pos.entry - price;
+    const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
+    return { result: pnlEur >= 0 ? 'WIN' : 'LOSS', closePrice: price, pnlEur, timeout: true };
+  }
+
+  if (result === null) return null;
+
+  const priceDiff = result === 'WIN'
+    ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
+    : (pos.direction === 'LONG' ? pos.sl - pos.entry : pos.entry - pos.sl);
+  const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
+  return { result, closePrice, pnlEur, timeout: false };
 }
 
 async function checkPositions() {
-  if (positions.length === 0) return;
+  // --- Posizioni reali ---
   for (let i = positions.length - 1; i >= 0; i--) {
     const pos = positions[i];
     try {
       const price = await getPrice(pos.asset);
       if (price === null) continue;
-      let result = null;
-      let closePrice = price;
-      if (pos.direction === 'LONG') {
-        if (price >= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
-        else if (price <= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
-      } else {
-        if (price <= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
-        else if (price >= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
-      }
+      const out = evaluatePosition(pos, price);
+      if (!out) continue;
 
-      // Chiusura automatica dopo 7 giorni
-      const ageHours = (new Date() - new Date(pos.openedAt)) / 3600000;
-      if (ageHours >= 168 && result === null) {
-        const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
-        const priceDiff = pos.direction === 'LONG' ? price - pos.entry : pos.entry - price;
-        const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
-        const timeoutResult = pnlEur >= 0 ? 'WIN' : 'LOSS';
-        await dbCloseTrade(pos.dbId, price, timeoutResult, pnlEur);
-        closedPositions.push(Object.assign({}, pos, { result: timeoutResult, closePrice: price, pnl_eur: pnlEur, closedAt: new Date() }));
-        positions.splice(i, 1);
+      await dbCloseTrade(pos.dbId, out.closePrice, out.result, out.pnlEur);
+      closedPositions.push(Object.assign({}, pos, {
+        result: out.result, closePrice: out.closePrice,
+        pnl_eur: out.pnlEur, closedAt: new Date()
+      }));
+      positions.splice(i, 1);
+
+      if (out.timeout) {
         await sendTelegram(
           '⏰ <b>POSIZIONE CHIUSA — TIMEOUT 7 GIORNI</b>\n' +
           '━━━━━━━━━━━━━━━━━━\n' +
           '📊 Asset: <b>' + pos.asset + '</b>\n' +
           '📊 Direzione: ' + pos.direction + '\n' +
-          '💰 Ingresso: $' + pos.entry.toLocaleString('it-IT') + '\n' +
-          '🏁 Uscita: $' + price.toLocaleString('it-IT') + '\n' +
-          '💶 P&L: <b>' + (pnlEur >= 0 ? '+' : '') + '€' + pnlEur.toFixed(2) + '</b>\n' +
+          '💰 Ingresso: $' + fmtAsset(pos.entry, pos.asset) + '\n' +
+          '🏁 Uscita: $' + fmtAsset(out.closePrice, pos.asset) + '\n' +
+          '💶 P&L: <b>' + (out.pnlEur >= 0 ? '+' : '') + '€' + out.pnlEur.toFixed(2) + '</b>\n' +
           '━━━━━━━━━━━━━━━━━━'
         );
-        continue;
-      }
-
-      if (result) {
-        const priceDiff = result === 'WIN'
-          ? (pos.direction === 'LONG' ? pos.tp - pos.entry : pos.entry - pos.tp)
-          : (pos.direction === 'LONG' ? pos.sl - pos.entry : pos.entry - pos.sl);
-        const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
-        const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
-        await dbCloseTrade(pos.dbId, closePrice, result, pnlEur);
-        closedPositions.push(Object.assign({}, pos, { result, closePrice, pnl_eur: pnlEur, closedAt: new Date() }));
-        positions.splice(i, 1);
-        await sendTelegram(buildCloseMessage(pos, result, closePrice, pnlEur));
+      } else {
+        await sendTelegram(buildCloseMessage(pos, out.result, out.closePrice, out.pnlEur));
       }
     } catch (e) {
       console.error('Errore check:', e.message);
+    }
+  }
+
+  // --- Posizioni ombra: stesso monitoraggio, nessuna notifica Telegram ---
+  for (let i = shadowPositions.length - 1; i >= 0; i--) {
+    const pos = shadowPositions[i];
+    try {
+      const price = await getPrice(pos.asset);
+      if (price === null) continue;
+      const out = evaluatePosition(pos, price);
+      if (!out) continue;
+
+      await dbCloseTrade(pos.dbId, out.closePrice, out.result, out.pnlEur);
+      shadowPositions.splice(i, 1);
+      console.log('OMBRA chiusa:', pos.asset, pos.direction,
+        '->', out.result, 'P&L simulato:', out.pnlEur);
+    } catch (e) {
+      console.error('Errore check ombra:', e.message);
     }
   }
 }
@@ -641,11 +745,15 @@ async function pollTelegram() {
         const type = text === '/giorno' ? 'day' : text === '/settimana' ? 'week' : text === '/mese' ? 'month' : 'year';
         const label = text === '/giorno' ? 'GIORNALIERO' : text === '/settimana' ? 'SETTIMANALE' : text === '/mese' ? 'MENSILE' : 'ANNUALE';
         reply = buildReport(label, getFiltered(type, trades));
+
       } else if (text === '/aperte') {
         reply = buildOpenPositions();
+
       } else if (text === '/chiudi tutto') {
         positions = [];
-        reply = '🗑 <b>Tutte le posizioni cancellate dalla memoria.</b>\nNota: i trade aperti su Supabase restano registrati.';
+        shadowPositions = [];
+        reply = '🗑 <b>Posizioni cancellate dalla memoria (reali e ombra).</b>\nNota: i trade restano registrati su Supabase.';
+
       } else if (text === '/slmin') {
         let msg = '⚙️ <b>SL MINIMI CONFIGURATI</b>\n━━━━━━━━━━━━━━━━━━\n';
         const shown = new Set();
@@ -658,17 +766,53 @@ async function pollTelegram() {
         }
         msg += '━━━━━━━━━━━━━━━━━━';
         reply = msg;
+
+      } else if (text === '/filtro') {
+        reply = '📐 <b>FILTRO TREND MA50</b>\n' +
+          '━━━━━━━━━━━━━━━━━━\n' +
+          'Stato: <b>' + (TREND_FILTER_ENABLED ? 'ATTIVO ✅' : 'DISATTIVO ❌') + '</b>\n' +
+          'Regola: LONG solo sopra MA50, SHORT solo sotto\n' +
+          'Ombra aperte ora: ' + shadowPositions.length + '\n' +
+          '━━━━━━━━━━━━━━━━━━\n' +
+          'I segnali filtrati vengono tracciati in silenzio.\n' +
+          'Usa /stats per il confronto con e senza filtro.';
+
+      } else if (text === '/filtrati') {
+        const trades = await dbGetStats();
+        const shadow = Array.isArray(trades) ? trades.filter(t => t.filtered === true) : [];
+        const chiusi = shadow.filter(t => t.result !== null);
+        if (shadow.length === 0) {
+          reply = '🚫 <b>SEGNALI FILTRATI</b>\n━━━━━━━━━━━━━━━━━━\nNessun segnale filtrato finora.';
+        } else {
+          let msg = '🚫 <b>SEGNALI FILTRATI (' + shadow.length + ')</b>\n';
+          msg += 'Conclusi: ' + chiusi.length + ' | Aperti: ' + (shadow.length - chiusi.length) + '\n';
+          msg += '━━━━━━━━━━━━━━━━━━\n';
+          shadow.slice(0, 12).forEach(t => {
+            const esito = t.result === 'WIN' ? '✅ WIN' : t.result === 'LOSS' ? '❌ LOSS' : '⏳ aperto';
+            const pnl = t.result !== null
+              ? ' (' + (parseFloat(t.pnl_eur) >= 0 ? '+' : '') + '€' + parseFloat(t.pnl_eur).toFixed(2) + ')'
+              : '';
+            const ora = new Date(t.opened_at).toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + '\n';
+          });
+          if (shadow.length > 12) msg += '... e altri ' + (shadow.length - 12) + '\n';
+          msg += '━━━━━━━━━━━━━━━━━━\nUsa /stats per il verdetto sul filtro.';
+          reply = msg;
+        }
+
       } else if (text === '/testreport') {
-        const now = new Date();
-        const itTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
+        const now2 = new Date();
+        const itTime = new Date(now2.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
         reply = '🔧 <b>TEST SCHEDULER</b>\n' +
           '━━━━━━━━━━━━━━━━━━\n' +
-          'Ora server UTC: ' + now.toISOString() + '\n' +
+          'Ora server UTC: ' + now2.toISOString() + '\n' +
           'Ora italiana: ' + itTime.toLocaleString('it-IT') + '\n' +
           'Ore: ' + itTime.getHours() + ' | Minuti: ' + itTime.getMinutes() + '\n' +
           'Giorno settimana: ' + itTime.getDay() + '\n' +
           'lastReportDay: ' + lastReportDay + '\n' +
+          'Posizioni reali: ' + positions.length + ' | Ombra: ' + shadowPositions.length + '\n' +
           '━━━━━━━━━━━━━━━━━━';
+
       } else if (text === '/stats') {
         const trades = await dbGetStats();
         reply = await buildStatsMessage(trades);
@@ -686,7 +830,7 @@ async function pollTelegram() {
 
 app.post('/webhook', async (req, res) => {
   try {
-    const { asset, direction, entry, sl, tp } = req.body;
+    const { asset, direction, entry, sl, tp, trend } = req.body;
     console.log('Webhook ricevuto:', JSON.stringify(req.body));
 
     if (!asset || !direction || !entry) {
@@ -701,8 +845,9 @@ app.post('/webhook', async (req, res) => {
     const dir = direction.toUpperCase();
     const entryNum = roundPrice(parseFloat(entry), assetUp);
 
-    const existing = positions.find(p => p.asset === assetUp);
-    if (existing) {
+    // Blocco doppio: controlla sia le reali che le ombra
+    if (positions.find(p => p.asset === assetUp) ||
+        shadowPositions.find(p => p.asset === assetUp)) {
       console.log('Segnale ignorato — posizione già aperta su:', assetUp);
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
@@ -716,13 +861,41 @@ app.post('/webhook', async (req, res) => {
       return res.json({ ok: false, skipped: true, reason: 'SL anomalo: ' + lv.sl });
     }
 
-    const stats = await getWinRates(assetUp);
-    const pos = { asset: assetUp, direction: finalDir, entry: entryNum, sl: lv.sl, tp: lv.tp, openedAt: new Date() };
-    const dbId = await dbInsertTrade(pos, lv);
+    // === FILTRO TREND MA50 ===
+    const trendValue = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
+    let isFiltered = false;
+
+    if (TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue > 0) {
+      const sopraTrend = entryNum > trendValue;
+      const controTrend = (finalDir === 'LONG' && !sopraTrend) ||
+                          (finalDir === 'SHORT' && sopraTrend);
+      if (controTrend) {
+        isFiltered = true;
+        console.log('Segnale FILTRATO da MA50:', assetUp, finalDir,
+          '| entry:', entryNum, '| MA50:', trendValue);
+      }
+    }
+
+    const pos = {
+      asset: assetUp, direction: finalDir, entry: entryNum,
+      sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue
+    };
+
+    const dbId = await dbInsertTrade(pos, lv, isFiltered);
     pos.dbId = dbId;
+
+    if (isFiltered) {
+      // Tracciata in ombra: monitorata ma non notificata
+      shadowPositions.push(pos);
+      return res.json({ ok: true, skipped: true, reason: 'contro-trend MA50', shadow: true });
+    }
+
+    // Segnale valido: notifica su Telegram
+    const stats = await getWinRates(assetUp);
     positions.push(pos);
-    await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv, stats));
+    await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv, stats, trendValue));
     res.json({ ok: true });
+
   } catch (e) {
     console.error('Errore webhook:', e.message);
     res.status(500).json({ error: e.message });
@@ -734,6 +907,7 @@ app.get('/', (req, res) => res.send('Bot attivo ✅'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
+  console.log('Filtro MA50:', TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO');
   await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
   console.log('Webhook rimosso, polling attivo');
   setInterval(checkPositions, 3 * 60 * 1000);
