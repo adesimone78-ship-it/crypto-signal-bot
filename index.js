@@ -188,6 +188,41 @@ async function pingSupabase() {
   }
 }
 
+// Ricarica le posizioni ancora aperte da Supabase dopo un riavvio
+async function reloadOpenPositions() {
+  try {
+    const res = await fetch(SUPABASE_URL + '/rest/v1/trades?result=is.null&order=opened_at.asc', {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY
+      }
+    });
+    const rows = await res.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      console.log('Nessuna posizione aperta da ricaricare');
+      return;
+    }
+
+    let reali = 0, ombra = 0;
+    for (const r of rows) {
+      const pos = {
+        asset: r.asset,
+        direction: r.direction,
+        entry: parseFloat(r.entry),
+        sl: parseFloat(r.sl),
+        tp: parseFloat(r.tp),
+        openedAt: new Date(r.opened_at),
+        dbId: r.id
+      };
+      if (r.filtered === true) { shadowPositions.push(pos); ombra++; }
+      else { positions.push(pos); reali++; }
+    }
+    console.log('Posizioni ricaricate da Supabase — reali:', reali, '| ombra:', ombra);
+  } catch (e) {
+    console.error('Errore reloadOpenPositions:', e.message);
+  }
+}
+
 // Win rate calcolato SOLO sui trade reali (filtered = false)
 async function getWinRates(asset) {
   try {
@@ -529,7 +564,6 @@ async function buildStatsMessage(trades) {
       msg += 'Impatto neutro finora.\n';
     }
 
-    // Win rate combinato: come sarebbe senza filtro
     const all = real.concat(shadow);
     const a = statBlock(all);
     msg += '📊 Senza filtro sarebbe: ' + a.rate + '% win su ' + a.count + ' trade\n';
@@ -915,4 +949,5 @@ app.listen(PORT, async () => {
   setInterval(checkScheduledReports, 60 * 1000);
   setInterval(pingSupabase, 60 * 60 * 1000);
   pingSupabase();
+  await reloadOpenPositions();
 });
