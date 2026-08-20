@@ -100,6 +100,7 @@ let processedIds = new Set();
 let lastReportDay = -1;
 let lastReportWeek = -1;
 let lastReportMonth = -1;
+let priceCache = {};       // cache prezzi 60s per ridurre le chiamate API
 
 // === SUPABASE ===
 async function dbInsertTrade(pos, lv, isFiltered) {
@@ -375,21 +376,59 @@ async function getPrice(asset) {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
       'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
-    if (yahooMap[asset]) {
+     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
-      try {
-        const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d');
-        const text = await res.text();
-        if (text.includes('Too Many Requests')) {
-          console.warn('Yahoo rate limit per:', symbol);
-          return null;
-        }
-        const data = JSON.parse(text);
-        return data.chart.result[0].meta.regularMarketPrice;
-      } catch(e) {
-        console.warn('Yahoo errore per:', symbol, e.message);
-        return null;
+
+      // Cache 60 secondi — evita chiamate ripetute sullo stesso simbolo
+      const cached = priceCache[symbol];
+      if (cached && (Date.now() - cached.at) < 60000) {
+        return cached.price;
       }
+
+      try {
+        const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d', {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+            'Accept': 'application/json'
+          }
+        });
+        const text = await res.text();
+        if (!text.includes('Too Many Requests')) {
+          const data = JSON.parse(text);
+          const price = data.chart.result[0].meta.regularMarketPrice;
+          priceCache[symbol] = { price, at: Date.now() };
+          return price;
+        }
+        console.warn('Yahoo rate limit per:', symbol, '— provo Stooq');
+      } catch(e) {
+        console.warn('Yahoo errore per:', symbol, e.message, '— provo Stooq');
+      }
+
+      // Fallback Stooq — gratuito, nessun rate limit
+      const stooqMap = {
+        'GC=F': 'xauusd', 'SI=F': 'xagusd',
+        'CL=F': 'cl.f', 'NQ=F': 'nq.f', 'ES=F': 'es.f'
+      };
+      const stooqSym = stooqMap[symbol];
+      if (stooqSym) {
+        try {
+          const res2 = await fetch('https://stooq.com/q/l/?s=' + stooqSym + '&f=sd2t2ohlc&h&e=csv');
+          const csv = await res2.text();
+          const righe = csv.trim().split('\n');
+          if (righe.length > 1) {
+            const campi = righe[1].split(',');
+            const price = parseFloat(campi[6]);
+            if (!isNaN(price) && price > 0) {
+              priceCache[symbol] = { price, at: Date.now() };
+              console.log('Prezzo da Stooq per', symbol + ':', price);
+              return price;
+            }
+          }
+        } catch(e) {
+          console.warn('Stooq errore per:', stooqSym, e.message);
+        }
+      }
+      return null;
     }
     return null;
   } catch (e) {
