@@ -9,6 +9,7 @@ const CHAT_ID = process.env.CHAT_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const TWELVE_KEY = process.env.TWELVE_KEY || 'demo';
+const FINNHUB_KEY = process.env.FINNHUB_KEY || '';
 const MARGIN_DEFAULT = 274.10;
 const ORDER_DEFAULT = 548.20;
 
@@ -101,7 +102,38 @@ let processedIds = new Set();
 let lastReportDay = -1;
 let lastReportWeek = -1;
 let lastReportMonth = -1;
-let priceCache = {};       // cache prezzi 60s per ridurre le chiamate API
+let priceCache = {};       // cache prezzi per ridurre le chiamate API
+
+// Proxy ETF per asset non coperti dalle API gratuite (futures/indici)
+const proxyMap = {
+  XAU: 'GLD', 'CMCMARKETS:GOLD': 'GLD', 'CMCMARKETS:GOLDQ2026': 'GLD',
+  XAGUSD: 'SLV', 'CMCMARKETS:SILVER': 'SLV',
+  'CMCMARKETS:SILVERU2026': 'SLV', 'CMCMARKETS:SILVERN2026': 'SLV',
+  SILVERN2026: 'SLV',
+  USOIL: 'USO', 'EASYMARKETS:OILUSD': 'USO',
+  NAS100: 'QQQ', US100: 'QQQ', 'FOREXCOM:NAS100': 'QQQ',
+  'PEPPERSTONE:US500': 'SPY', US500: 'SPY'
+};
+
+// Legge il prezzo di un ETF da Finnhub (cache 5 minuti)
+async function getFinnhubPrice(symbol) {
+  const cached = priceCache['FH_' + symbol];
+  if (cached && (Date.now() - cached.at) < 300000) return cached.price;
+
+  try {
+    const res = await fetch('https://finnhub.io/api/v1/quote?symbol=' +
+      symbol + '&token=' + FINNHUB_KEY);
+    const data = await res.json();
+    if (data && data.c && data.c > 0) {
+      priceCache['FH_' + symbol] = { price: data.c, at: Date.now() };
+      return data.c;
+    }
+    console.warn('Finnhub risposta non valida per', symbol + ':', JSON.stringify(data));
+  } catch (e) {
+    console.error('Errore Finnhub per', symbol + ':', e.message);
+  }
+  return null;
+}
 
 // === SUPABASE ===
 async function dbInsertTrade(pos, lv, isFiltered) {
@@ -123,7 +155,8 @@ async function dbInsertTrade(pos, lv, isFiltered) {
         margin: lv.margin,
         order_eur: lv.order,
         opened_at: pos.openedAt,
-        filtered: isFiltered === true
+        filtered: isFiltered === true,
+        proxy_ratio: pos.proxyRatio || null
       })
     });
     const data = await res.json();
@@ -214,7 +247,8 @@ async function reloadOpenPositions() {
         sl: parseFloat(r.sl),
         tp: parseFloat(r.tp),
         openedAt: new Date(r.opened_at),
-        dbId: r.id
+        dbId: r.id,
+        proxyRatio: r.proxy_ratio ? parseFloat(r.proxy_ratio) : null
       };
       if (r.filtered === true) { shadowPositions.push(pos); ombra++; }
       else { positions.push(pos); reali++; }
@@ -350,6 +384,21 @@ async function getPrice(asset) {
       return null;
     }
 
+    // Proxy ETF via Finnhub — per futures e indici non coperti altrove
+    if (proxyMap[asset] && FINNHUB_KEY) {
+      const proxySymbol = proxyMap[asset];
+      const proxyPrice = await getFinnhubPrice(proxySymbol);
+      if (proxyPrice !== null) {
+        const pos = positions.find(p => p.asset === asset) ||
+                    shadowPositions.find(p => p.asset === asset);
+        if (pos && pos.proxyRatio) {
+          const stimato = proxyPrice * pos.proxyRatio;
+          return roundPrice(stimato, asset);
+        }
+        console.warn('Proxy senza ratio per', asset, '— provo Yahoo');
+      }
+    }
+
     // Twelve Data — solo azioni USA (il piano free non copre commodity e indici)
     const twelveMap = {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
@@ -358,8 +407,6 @@ async function getPrice(asset) {
 
     if (twelveMap[asset]) {
       const symbol = twelveMap[asset];
-
-      // Cache 10 minuti
       const cached = priceCache[symbol];
       if (cached && (Date.now() - cached.at) < 600000) {
         return cached.price;
@@ -392,10 +439,8 @@ async function getPrice(asset) {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
       'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
-     if (yahooMap[asset]) {
+    if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
-
-      // Cache 10 minuti — riduce drasticamente le chiamate a Yahoo
       const cached = priceCache[symbol];
       if (cached && (Date.now() - cached.at) < 600000) {
         return cached.price;
@@ -420,7 +465,6 @@ async function getPrice(asset) {
         console.warn('Yahoo errore per:', symbol, e.message);
       }
 
-      // Se Yahoo blocca, riusa l'ultimo prezzo noto fino a 1 ora
       if (cached && (Date.now() - cached.at) < 3600000) {
         console.log('Uso prezzo in cache per', symbol + ':', cached.price);
         return cached.price;
@@ -838,6 +882,21 @@ async function pollTelegram() {
         msg += '━━━━━━━━━━━━━━━━━━';
         reply = msg;
 
+      } else if (text === '/prezzi') {
+        let msg = '💹 <b>FONTI PREZZI</b>\n━━━━━━━━━━━━━━━━━━\n';
+        msg += 'Finnhub: ' + (FINNHUB_KEY ? 'ATTIVO ✅' : 'NON configurato ❌') + '\n';
+        msg += '━━━━━━━━━━━━━━━━━━\n';
+        const shown = new Set();
+        for (const [k, v] of Object.entries(proxyMap)) {
+          const short = k.split(':').pop();
+          if (shown.has(v)) continue;
+          shown.add(v);
+          const p = await getFinnhubPrice(v);
+          msg += '• ' + v + ': ' + (p !== null ? '$' + p : 'non disponibile') + '\n';
+        }
+        msg += '━━━━━━━━━━━━━━━━━━\nProxy ETF per futures e indici.';
+        reply = msg;
+
       } else if (text === '/filtro') {
         reply = '📐 <b>FILTRO TREND MA50</b>\n' +
           '━━━━━━━━━━━━━━━━━━\n' +
@@ -947,9 +1006,21 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
+    // Calibrazione proxy: salva il rapporto entry/ETF al momento del segnale
+    let proxyRatio = null;
+    if (proxyMap[assetUp] && FINNHUB_KEY) {
+      const proxyPrice = await getFinnhubPrice(proxyMap[assetUp]);
+      if (proxyPrice && proxyPrice > 0) {
+        proxyRatio = entryNum / proxyPrice;
+        console.log('Proxy calibrato:', assetUp, '=', proxyMap[assetUp],
+          'x', proxyRatio.toFixed(4), '| entry:', entryNum, '| ETF:', proxyPrice);
+      }
+    }
+
     const pos = {
       asset: assetUp, direction: finalDir, entry: entryNum,
-      sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue
+      sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue,
+      proxyRatio: proxyRatio
     };
 
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
@@ -979,6 +1050,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
   console.log('Filtro MA50:', TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO');
+  console.log('Finnhub:', FINNHUB_KEY ? 'configurato' : 'NON configurato');
   await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
   console.log('Webhook rimosso, polling attivo');
   setInterval(checkPositions, 3 * 60 * 1000);
