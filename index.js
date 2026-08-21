@@ -350,17 +350,10 @@ async function getPrice(asset) {
       return null;
     }
 
-    // Twelve Data — fonte primaria per azioni, commodity e indici
+    // Twelve Data — solo azioni USA (il piano free non copre commodity e indici)
     const twelveMap = {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
-      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA',
-      XAU: 'XAU/USD', 'CMCMARKETS:GOLD': 'XAU/USD', 'CMCMARKETS:GOLDQ2026': 'XAU/USD',
-      XAGUSD: 'XAG/USD', 'CMCMARKETS:SILVER': 'XAG/USD',
-      'CMCMARKETS:SILVERU2026': 'XAG/USD', 'CMCMARKETS:SILVERN2026': 'XAG/USD',
-      SILVERN2026: 'XAG/USD',
-      USOIL: 'WTI/USD', 'EASYMARKETS:OILUSD': 'WTI/USD',
-      NAS100: 'NDX', US100: 'NDX', 'FOREXCOM:NAS100': 'NDX',
-      'PEPPERSTONE:US500': 'SPX', US500: 'SPX'
+      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
     };
 
     if (twelveMap[asset]) {
