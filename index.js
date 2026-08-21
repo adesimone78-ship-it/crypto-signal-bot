@@ -13,7 +13,7 @@ const FINNHUB_KEY = process.env.FINNHUB_KEY || '';
 const MARGIN_DEFAULT = 274.10;
 const ORDER_DEFAULT = 548.20;
 
-// === FILTRO TREND MA50 ===
+// === FILTRO TREND EMA 150/250 ===
 // true  = i segnali contro-trend vengono bloccati ma tracciati in ombra
 // false = tutti i segnali passano (il filtro non blocca nulla)
 const TREND_FILTER_ENABLED = true;
@@ -625,7 +625,7 @@ async function buildStatsMessage(trades) {
   // === CONFRONTO CON I SEGNALI FILTRATI ===
   msg += '━━━━━━━━━━━━━━━━━━\n';
   msg += '🚫 <b>SEGNALI FILTRATI (ombra)</b>\n';
-  msg += 'Filtro MA50: ' + (TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO') + '\n';
+    msg += 'Filtro EMA Trend: ' + (TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO') + '\n';
 
   if (shadow.length === 0) {
     msg += 'Nessun segnale filtrato ancora concluso.\n';
@@ -1032,7 +1032,7 @@ app.post('/webhook', async (req, res) => {
     if (isFiltered) {
       // Tracciata in ombra: monitorata ma non notificata
       shadowPositions.push(pos);
-      return res.json({ ok: true, skipped: true, reason: 'contro-trend MA50', shadow: true });
+            return res.json({ ok: true, skipped: true, reason: 'contro-trend EMA', shadow: true });
     }
 
     // Segnale valido: notifica su Telegram
@@ -1052,7 +1052,8 @@ app.get('/', (req, res) => res.send('Bot attivo ✅'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log('Server avviato porta ' + PORT);
-  console.log('Filtro MA50:', TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO');
+  
+    console.log('Filtro EMA Trend:', TREND_FILTER_ENABLED ? 'ATTIVO' : 'DISATTIVO');
   console.log('Finnhub:', FINNHUB_KEY ? 'configurato' : 'NON configurato');
   await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
   console.log('Webhook rimosso, polling attivo');
