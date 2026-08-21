@@ -379,9 +379,9 @@ async function getPrice(asset) {
      if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
 
-      // Cache 60 secondi — evita chiamate ripetute sullo stesso simbolo
+      // Cache 10 minuti — riduce drasticamente le chiamate a Yahoo
       const cached = priceCache[symbol];
-      if (cached && (Date.now() - cached.at) < 60000) {
+      if (cached && (Date.now() - cached.at) < 600000) {
         return cached.price;
       }
 
@@ -399,35 +399,17 @@ async function getPrice(asset) {
           priceCache[symbol] = { price, at: Date.now() };
           return price;
         }
-        console.warn('Yahoo rate limit per:', symbol, '— provo Stooq');
+        console.warn('Yahoo rate limit per:', symbol);
       } catch(e) {
-        console.warn('Yahoo errore per:', symbol, e.message, '— provo Stooq');
+        console.warn('Yahoo errore per:', symbol, e.message);
       }
 
-      // Fallback Stooq — gratuito, nessun rate limit
-      const stooqMap = {
-        'GC=F': 'xauusd', 'SI=F': 'xagusd',
-        'CL=F': 'cl.f', 'NQ=F': 'nq.f', 'ES=F': 'es.f'
-      };
-      const stooqSym = stooqMap[symbol];
-      if (stooqSym) {
-        try {
-          const res2 = await fetch('https://stooq.com/q/l/?s=' + stooqSym + '&f=sd2t2ohlc&h&e=csv');
-          const csv = await res2.text();
-          const righe = csv.trim().split('\n');
-          if (righe.length > 1) {
-            const campi = righe[1].split(',');
-            const price = parseFloat(campi[6]);
-            if (!isNaN(price) && price > 0) {
-              priceCache[symbol] = { price, at: Date.now() };
-              console.log('Prezzo da Stooq per', symbol + ':', price);
-              return price;
-            }
-          }
-        } catch(e) {
-          console.warn('Stooq errore per:', stooqSym, e.message);
-        }
+      // Se Yahoo blocca, riusa l'ultimo prezzo noto fino a 1 ora
+      if (cached && (Date.now() - cached.at) < 3600000) {
+        console.log('Uso prezzo in cache per', symbol + ':', cached.price);
+        return cached.price;
       }
+
       return null;
     }
     return null;
