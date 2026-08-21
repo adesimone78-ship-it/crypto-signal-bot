@@ -8,6 +8,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const TWELVE_KEY = process.env.TWELVE_KEY || 'demo';
 const MARGIN_DEFAULT = 274.10;
 const ORDER_DEFAULT = 548.20;
 
@@ -349,18 +350,40 @@ async function getPrice(asset) {
       return null;
     }
 
+    // Twelve Data — fonte primaria per azioni, commodity e indici
     const twelveMap = {
       'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
-      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA',
+      XAU: 'XAU/USD', 'CMCMARKETS:GOLD': 'XAU/USD', 'CMCMARKETS:GOLDQ2026': 'XAU/USD',
+      XAGUSD: 'XAG/USD', 'CMCMARKETS:SILVER': 'XAG/USD',
+      'CMCMARKETS:SILVERU2026': 'XAG/USD', 'CMCMARKETS:SILVERN2026': 'XAG/USD',
+      SILVERN2026: 'XAG/USD',
+      USOIL: 'WTI/USD', 'EASYMARKETS:OILUSD': 'WTI/USD',
+      NAS100: 'NDX', US100: 'NDX', 'FOREXCOM:NAS100': 'NDX',
+      'PEPPERSTONE:US500': 'SPX', US500: 'SPX'
     };
+
     if (twelveMap[asset]) {
       const symbol = twelveMap[asset];
+
+      // Cache 10 minuti
+      const cached = priceCache[symbol];
+      if (cached && (Date.now() - cached.at) < 600000) {
+        return cached.price;
+      }
+
       try {
-        const res = await fetch('https://api.twelvedata.com/price?symbol=' + symbol + '&apikey=demo');
+        const res = await fetch('https://api.twelvedata.com/price?symbol=' +
+          encodeURIComponent(symbol) + '&apikey=' + TWELVE_KEY);
         const data = await res.json();
-        if (data && data.price) return parseFloat(data.price);
+        if (data && data.price) {
+          const price = parseFloat(data.price);
+          priceCache[symbol] = { price, at: Date.now() };
+          return price;
+        }
+        console.warn('Twelve Data per', symbol + ':', JSON.stringify(data), '— provo Yahoo');
       } catch(e) {
-        console.warn('Twelve Data errore per:', symbol, e.message);
+        console.warn('Twelve Data errore per:', symbol, e.message, '— provo Yahoo');
       }
     }
 
