@@ -514,9 +514,10 @@ function buildEntryMessage(asset, direction, entry, lv, stats, trendValue) {
     statsBlock += '━━━━━━━━━━━━━━━━━━\n';
   }
 
-  const slNote = lv.slAdjusted ? '  ⚙️' : '';
-  const trendLine = (trendValue !== null && !isNaN(trendValue) && trendValue > 0)
-    ? '📐 MA50: $' + fmt(trendValue) + ' — trend ' + (entry > trendValue ? 'RIALZISTA ✅' : 'RIBASSISTA ✅') + '\n'
+  const slNote = lv.slAdjusted ? '  ⚙️' : '';    
+  
+  const trendLine = (trendValue !== null && !isNaN(trendValue) && trendValue !== 0)
+    ? '📐 EMA Trend: ' + (trendValue > 0 ? 'RIALZISTA ✅' : 'RIBASSISTA ✅') + '\n'
     : '';
 
   return statsBlock +
@@ -897,11 +898,12 @@ async function pollTelegram() {
         msg += '━━━━━━━━━━━━━━━━━━\nProxy ETF per futures e indici.';
         reply = msg;
 
-      } else if (text === '/filtro') {
-        reply = '📐 <b>FILTRO TREND MA50</b>\n' +
+       } else if (text === '/filtro') {
+        reply = '📐 <b>FILTRO EMA TREND 150/250</b>\n' +
           '━━━━━━━━━━━━━━━━━━\n' +
           'Stato: <b>' + (TREND_FILTER_ENABLED ? 'ATTIVO ✅' : 'DISATTIVO ❌') + '</b>\n' +
-          'Regola: LONG solo sopra MA50, SHORT solo sotto\n' +
+          'Regola: LONG solo se EMA150 > EMA250\n' +
+          '        SHORT solo se EMA150 < EMA250\n' +
           'Ombra aperte ora: ' + shadowPositions.length + '\n' +
           '━━━━━━━━━━━━━━━━━━\n' +
           'I segnali filtrati vengono tracciati in silenzio.\n' +
@@ -991,18 +993,19 @@ app.post('/webhook', async (req, res) => {
       return res.json({ ok: false, skipped: true, reason: 'SL anomalo: ' + lv.sl });
     }
 
-    // === FILTRO TREND MA50 ===
+    // === FILTRO TREND EMA 150/250 ===
+    // Il Pine invia 1 (rialzista) o -1 (ribassista)
     const trendValue = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
     let isFiltered = false;
 
-    if (TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue > 0) {
-      const sopraTrend = entryNum > trendValue;
-      const controTrend = (finalDir === 'LONG' && !sopraTrend) ||
-                          (finalDir === 'SHORT' && sopraTrend);
+    if (TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue !== 0) {
+      const trendRialzista = trendValue > 0;
+      const controTrend = (finalDir === 'LONG' && !trendRialzista) ||
+                          (finalDir === 'SHORT' && trendRialzista);
       if (controTrend) {
         isFiltered = true;
-        console.log('Segnale FILTRATO da MA50:', assetUp, finalDir,
-          '| entry:', entryNum, '| MA50:', trendValue);
+        console.log('Segnale FILTRATO da EMA Trend:', assetUp, finalDir,
+          '| trend:', trendRialzista ? 'RIALZISTA' : 'RIBASSISTA');
       }
     }
 
