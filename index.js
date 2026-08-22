@@ -842,9 +842,16 @@ function checkScheduledReports() {
   }
 }
 
+let pollingInFlight = false;
+
 async function pollTelegram() {
+  if (pollingInFlight) return; // evita richieste sovrapposte
+  pollingInFlight = true;
   try {
-    const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=0');
+    const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN +
+      '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=25', {
+        signal: AbortSignal.timeout(30000)
+      });
     const data = await res.json();
     if (!data.ok || !data.result.length) return;
     for (const update of data.result) {
@@ -956,7 +963,9 @@ async function pollTelegram() {
       }
     }
   } catch (e) {
-    console.error('Errore polling:', e.message);
+    console.error('Errore polling:', e.message, e.cause ? JSON.stringify(e.cause) : '');
+  } finally {
+    pollingInFlight = false;
   }
 }
 
