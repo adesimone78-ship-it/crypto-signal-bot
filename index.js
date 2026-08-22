@@ -852,8 +852,11 @@ async function pollTelegram() {
       '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=25', {
         signal: AbortSignal.timeout(30000)
       });
+
     const data = await res.json();
+    if (processedIds.size > 5000) processedIds.clear();
     if (!data.ok || !data.result.length) return;
+    
     for (const update of data.result) {
       lastUpdateId = update.update_id;
       if (processedIds.has(update.update_id)) continue;
