@@ -370,20 +370,21 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
 
 async function getPrice(asset) {
   try {
+  
     const cryptoMap = {
-      BTC: 'BTCUSDT', 'CMCMARKETS:BTCUSD': 'BTCUSDT',
-      ETH: 'ETHUSDT', 'CMCMARKETS:ETHUSD': 'ETHUSDT',
-      SOL: 'SOLUSDT', BNB: 'BNBUSDT', XRP: 'XRPUSDT'
-    };
-    if (cryptoMap[asset]) {
-      const binanceSymbol = cryptoMap[asset];
-      const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + binanceSymbol);
-      const data = await res.json();
-      if (data && data.price) return parseFloat(data.price);
-      console.warn('Binance risposta vuota per:', binanceSymbol);
-      return null;
-    }
-
+  BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
+  ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
+  SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
+};
+if (cryptoMap[asset]) {
+  const coinId = cryptoMap[asset];
+  const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + coinId + '&vs_currencies=usd');
+  const data = await res.json();
+  if (data && data[coinId] && data[coinId].usd) return parseFloat(data[coinId].usd);
+  console.warn('CoinGecko risposta vuota per:', coinId);
+  return null;
+}
+    
     // Proxy ETF via Finnhub — per futures e indici non coperti altrove
     if (proxyMap[asset] && FINNHUB_KEY) {
       const proxySymbol = proxyMap[asset];
