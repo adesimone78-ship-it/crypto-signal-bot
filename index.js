@@ -372,18 +372,30 @@ async function getPrice(asset) {
   try {
   
     const cryptoMap = {
-  BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
-  ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
-  SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
-};
-if (cryptoMap[asset]) {
-  const coinId = cryptoMap[asset];
-  const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + coinId + '&vs_currencies=usd');
-  const data = await res.json();
-  if (data && data[coinId] && data[coinId].usd) return parseFloat(data[coinId].usd);
-  console.warn('CoinGecko risposta vuota per:', coinId);
-  return null;
-}
+      BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
+      ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
+      SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
+    };
+    if (cryptoMap[asset]) {
+      const coinId = cryptoMap[asset];
+      const cached = priceCache[coinId];
+      if (cached && (Date.now() - cached.at) < 60000) {
+        return cached.price;
+      }
+      const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + coinId + '&vs_currencies=usd');
+      const data = await res.json();
+      if (data && data[coinId] && data[coinId].usd) {
+        const price = parseFloat(data[coinId].usd);
+        priceCache[coinId] = { price, at: Date.now() };
+        return price;
+      }
+      console.warn('CoinGecko risposta vuota per:', coinId, '- status:', res.status, '- body:', JSON.stringify(data));
+      if (cached) {
+        console.log('Uso prezzo in cache per', coinId + ':', cached.price);
+        return cached.price;
+      }
+      return null;
+    }
     
     // Proxy ETF via Finnhub — per futures e indici non coperti altrove
     if (proxyMap[asset] && FINNHUB_KEY) {
