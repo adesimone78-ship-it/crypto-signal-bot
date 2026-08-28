@@ -370,7 +370,7 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
 
 async function getPrice(asset) {
   try {
-  
+
     const cryptoMap = {
       BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
       ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
@@ -395,21 +395,6 @@ async function getPrice(asset) {
         return cached.price;
       }
       return null;
-    }
-    
-    // Proxy ETF via Finnhub — per futures e indici non coperti altrove
-    if (proxyMap[asset] && FINNHUB_KEY) {
-      const proxySymbol = proxyMap[asset];
-      const proxyPrice = await getFinnhubPrice(proxySymbol);
-      if (proxyPrice !== null) {
-        const pos = positions.find(p => p.asset === asset) ||
-                    shadowPositions.find(p => p.asset === asset);
-        if (pos && pos.proxyRatio) {
-          const stimato = proxyPrice * pos.proxyRatio;
-          return roundPrice(stimato, asset);
-        }
-        console.warn('Proxy senza ratio per', asset, '— provo Yahoo');
-      }
     }
 
     // Twelve Data — solo azioni USA (il piano free non copre commodity e indici)
@@ -440,6 +425,8 @@ async function getPrice(asset) {
       }
     }
 
+    // Yahoo Finance — prezzo reale di mercato: commodity, indici, futures, azioni.
+    // Controllato PRIMA del proxy ETF: è la fonte più accurata quando disponibile.
     const yahooMap = {
       XAU: 'GC=F',
       'CMCMARKETS:GOLD': 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
@@ -483,14 +470,49 @@ async function getPrice(asset) {
         return cached.price;
       }
 
+      // Yahoo ha fallito e la cache è scaduta (>1h) o assente: ultima spiaggia,
+      // stima dal proxy ETF via Finnhub prima di arrenderci.
+      if (proxyMap[asset] && FINNHUB_KEY) {
+        const proxySymbol = proxyMap[asset];
+        const proxyPrice = await getFinnhubPrice(proxySymbol);
+        if (proxyPrice !== null) {
+          const pos = positions.find(p => p.asset === asset) ||
+                      shadowPositions.find(p => p.asset === asset);
+          if (pos && pos.proxyRatio) {
+            const stimato = proxyPrice * pos.proxyRatio;
+            console.warn('Yahoo non disponibile da oltre 1h, uso stima da proxy ETF per', asset, ':', stimato);
+            return roundPrice(stimato, asset);
+          }
+          console.warn('Proxy senza ratio per', asset, '— nessun prezzo disponibile');
+        }
+      }
+
       return null;
     }
+
+    // Proxy ETF via Finnhub — solo per asset non coperti da nessuna fonte sopra
+    if (proxyMap[asset] && FINNHUB_KEY) {
+      const proxySymbol = proxyMap[asset];
+      const proxyPrice = await getFinnhubPrice(proxySymbol);
+      if (proxyPrice !== null) {
+        const pos = positions.find(p => p.asset === asset) ||
+                    shadowPositions.find(p => p.asset === asset);
+        if (pos && pos.proxyRatio) {
+          const stimato = proxyPrice * pos.proxyRatio;
+          return roundPrice(stimato, asset);
+        }
+        console.warn('Proxy senza ratio per', asset);
+      }
+    }
+
     return null;
   } catch (e) {
     console.error('Errore getPrice:', asset, e.message);
     return null;
   }
 }
+
+
 
 async function sendTelegram(text) {
   try {
