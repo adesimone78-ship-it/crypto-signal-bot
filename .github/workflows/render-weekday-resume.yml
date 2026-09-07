@@ -14,4 +14,9 @@ jobs:
         run: |
           curl -sf -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/resume" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Accept: application/json" || true
+      - name: Forza redeploy per garantire riavvio reale
+        run: |
+          curl -sf -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Accept: application/json"
