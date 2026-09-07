@@ -15,3 +15,7 @@ jobs:
           curl -sf -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/resume" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Accept: application/json"
+                      echo "--- stato servizio dopo resume ---"
+                                curl -s "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}" \
+                                            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+                                                        -H "Accept: application/json"
