@@ -1,4 +1,5 @@
 name: Keep-alive bot Render (feriali)
+
 on:
   schedule:
     - cron: '*/10 * * * 1-5'
@@ -9,5 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping servizio per evitare spin-down
+        id: ping
+        continue-on-error: true
         run: |
           curl -sf "https://crypto-signal-bot-89rl.onrender.com/" -o /dev/null -w "HTTP %{http_code}\n"
+
+      - name: Se il ping fallisce, forza un redeploy per auto-riparare il servizio
+        if: steps.ping.outcome == 'failure'
+        run: |
+          echo "Ping fallito: il servizio non risponde. Forzo un redeploy per riavviarlo."
+          curl -sf -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Accept: application/json"
+
+      - name: Segna il job come fallito se il ping era fallito (tracciato nello storico Actions)
+        if: steps.ping.outcome == 'failure'
+        run: exit 1
