@@ -104,6 +104,24 @@ let lastReportWeek = -1;
 let lastReportMonth = -1;
 let priceCache = {};       // cache prezzi per ridurre le chiamate API
 
+// Asset il cui SL/TP viene controllato su un FUTURE Yahoo (GC=F, SI=F, NQ=F,
+// ES=F, CL=F) mentre entry/segnale arrivano dal Cash/CFD di CMC Markets o
+// simili. Future e cash non sono lo stesso strumento: possono scostarsi di
+// qualche punto per la base future-cash, soprattutto vicino alle aperture di
+// sessione. Per questi asset uno STOP LOSS va confermato su 2 controlli
+// consecutivi (6 minuti) prima di essere eseguito, per non chiudere in perdita
+// su un disallineamento momentaneo tra le due fonti invece che su un vero
+// movimento di prezzo. Il TP non è soggetto alla stessa cautela: un falso
+// positivo lì è comunque un guadagno, non un danno da evitare.
+const FUTURES_SL_CONFIRM_ASSETS = new Set([
+  'XAU', 'CMCMARKETS:GOLD', 'CMCMARKETS:GOLDQ2026',
+  'XAGUSD', 'CMCMARKETS:SILVER', 'CMCMARKETS:SILVERU2026',
+  'SILVERN2026', 'CMCMARKETS:SILVERN2026',
+  'NAS100', 'US100', 'FOREXCOM:NAS100',
+  'PEPPERSTONE:US500', 'US500',
+  'USOIL', 'EASYMARKETS:OILUSD'
+]);
+
 // Proxy ETF per asset non coperti dalle API gratuite (futures/indici)
 const proxyMap = {
   XAU: 'GLD', 'CMCMARKETS:GOLD': 'GLD', 'CMCMARKETS:GOLDQ2026': 'GLD',
@@ -784,6 +802,20 @@ function evaluatePosition(pos, price) {
   } else {
     if (price <= pos.tp) { result = 'WIN'; closePrice = pos.tp; }
     else if (price >= pos.sl) { result = 'LOSS'; closePrice = pos.sl; }
+  }
+
+  // Conferma a 2 cicli per lo SL sugli asset controllati via future Yahoo
+  // (vedi FUTURES_SL_CONFIRM_ASSETS): se lo stop scatta ma non era già
+  // "in osservazione" dal ciclo precedente, non chiudere subito — segna la
+  // posizione e aspetta il prossimo controllo (3 min dopo). Se il prezzo
+  // rientra prima della conferma, il flag si resetta e non succede nulla.
+  if (result === 'LOSS' && FUTURES_SL_CONFIRM_ASSETS.has(pos.asset)) {
+    if (!pos._slPending) {
+      pos._slPending = true;
+      return null;
+    }
+  } else {
+    pos._slPending = false;
   }
 
   const ageHours = (new Date() - new Date(pos.openedAt)) / 3600000;
