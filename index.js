@@ -169,6 +169,24 @@ async function dbInsertTrade(pos, lv, isFiltered) {
   }
   return null;
 }
+async function logSignal(data) {
+  try {
+    await fetch(SUPABASE_URL + '/rest/v1/signals_log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify(data)
+    });
+  } catch (e) {
+    console.error('Errore logSignal:', e.message);
+  }
+}
+
+
 
 async function dbCloseTrade(dbId, closePrice, result, pnlEur) {
   if (!dbId) return;
@@ -1006,7 +1024,6 @@ async function pollTelegram() {
     pollingInFlight = false;
   }
 }
-
 app.post('/webhook', async (req, res) => {
   try {
     const { asset, direction, entry, sl, tp, trend } = req.body;
@@ -1014,6 +1031,11 @@ app.post('/webhook', async (req, res) => {
 
     if (!asset || !direction || !entry) {
       console.log('Payload vuoto o incompleto — ignorato');
+      logSignal({
+        asset: asset || 'SCONOSCIUTO', raw_direction: direction || null,
+        entry: entry ? parseFloat(entry) : null,
+        outcome: 'rejected_invalid_payload'
+      });
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
 
@@ -1023,11 +1045,25 @@ app.post('/webhook', async (req, res) => {
 
     const dir = direction.toUpperCase();
     const entryNum = roundPrice(parseFloat(entry), assetUp);
+    const trendRaw = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
 
-    // Blocco doppio: controlla sia le reali che le ombra
-    if (positions.find(p => p.asset === assetUp) ||
-        shadowPositions.find(p => p.asset === assetUp)) {
+    const conflictingPos = positions.find(p => p.asset === assetUp) ||
+                            shadowPositions.find(p => p.asset === assetUp);
+    if (conflictingPos) {
       console.log('Segnale ignorato — posizione già aperta su:', assetUp);
+      logSignal({
+        asset: assetUp, raw_direction: dir, entry: entryNum,
+        sl_raw: sl !== undefined ? parseFloat(sl) : null,
+        tp_raw: tp !== undefined ? parseFloat(tp) : null,
+        trend_raw: trendRaw,
+        outcome: 'ignored_duplicate',
+        conflicting_direction: conflictingPos.direction,
+        conflicting_entry: conflictingPos.entry,
+        conflicting_sl: conflictingPos.sl,
+        conflicting_tp: conflictingPos.tp,
+        conflicting_opened_at: conflictingPos.openedAt,
+        conflicting_trade_id: conflictingPos.dbId || null
+      });
       return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
 
@@ -1037,12 +1073,17 @@ app.post('/webhook', async (req, res) => {
     const slRatio = lv.sl / entryNum;
     if (slRatio < 0.5 || slRatio > 1.5) {
       console.log('Segnale rifiutato — SL anomalo:', lv.sl, 'entry:', entryNum, 'asset:', assetUp);
+      logSignal({
+        asset: assetUp, raw_direction: dir, entry: entryNum,
+        sl_raw: sl !== undefined ? parseFloat(sl) : null,
+        tp_raw: tp !== undefined ? parseFloat(tp) : null,
+        trend_raw: trendRaw,
+        outcome: 'rejected_sl_anomalo'
+      });
       return res.json({ ok: false, skipped: true, reason: 'SL anomalo: ' + lv.sl });
     }
 
-    // === FILTRO TREND EMA 150/250 ===
-    // Il Pine invia 1 (rialzista) o -1 (ribassista)
-    const trendValue = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
+    const trendValue = trendRaw;
     let isFiltered = false;
 
     if (TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue !== 0) {
@@ -1056,7 +1097,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Calibrazione proxy: salva il rapporto entry/ETF al momento del segnale
     let proxyRatio = null;
     if (proxyMap[assetUp] && FINNHUB_KEY) {
       const proxyPrice = await getFinnhubPrice(proxyMap[assetUp]);
@@ -1076,13 +1116,19 @@ app.post('/webhook', async (req, res) => {
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
     pos.dbId = dbId;
 
+    logSignal({
+      asset: assetUp, raw_direction: dir, entry: entryNum,
+      sl_raw: sl !== undefined ? parseFloat(sl) : null,
+      tp_raw: tp !== undefined ? parseFloat(tp) : null,
+      trend_raw: trendRaw,
+      outcome: isFiltered ? 'filtered_ema' : 'executed'
+    });
+
     if (isFiltered) {
-      // Tracciata in ombra: monitorata ma non notificata
       shadowPositions.push(pos);
-            return res.json({ ok: true, skipped: true, reason: 'contro-trend EMA', shadow: true });
+      return res.json({ ok: true, skipped: true, reason: 'contro-trend EMA', shadow: true });
     }
 
-    // Segnale valido: notifica su Telegram
     const stats = await getWinRates(assetUp);
     positions.push(pos);
     await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv, stats, trendValue));
@@ -1093,6 +1139,7 @@ app.post('/webhook', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
 
 app.get('/', (req, res) => res.send('Bot attivo ✅'));
 
