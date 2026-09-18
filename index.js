@@ -20,9 +20,9 @@ const TREND_FILTER_ENABLED = true;
 
 const marginMap = {
   BTC:                           { margin: 274.10,   order: 548.20    },
-  'CMCMARKETS:BTCUSD':           { margin: 268.94,   order: 537.87    },
+  'CMCMARKETS:BTCUSD':           { margin: 1056.87,  order: 2113.74   }, // fallback, superato da orderFactorMap
   ETH:                           { margin: 381.94,   order: 763.88    },
-  'CMCMARKETS:ETHUSD':           { margin: 36.12,    order: 72.25     },
+  'CMCMARKETS:ETHUSD':           { margin: 1127.37,  order: 2254.74   }, // fallback, superato da orderFactorMap
   SOL:                           { margin: 274.10,   order: 548.20    },
   XAU:                           { margin: 970.97,   order: 19419.43  },
   'CMCMARKETS:GOLD':             { margin: 970.97,   order: 19419.43  },
@@ -44,6 +44,36 @@ const marginMap = {
   'NASDAQ:NVDA':                 { margin: 607.92,   order: 3039.60   },
   NVDA:                          { margin: 607.92,   order: 3039.60   },
 };
+
+// Su CMC Markets margine e controvalore ordine sono SEMPRE quantità × prezzo
+// × %margine — MAI un importo fisso in euro. Un valore fisso in marginMap
+// (com'era finora per tutti gli asset) diventa via via più sbagliato quanto
+// più il prezzo di oggi si allontana dal prezzo a cui quel numero è stato
+// calibrato — sui future/CFD di metalli/indici il prezzo si muove meno in
+// proporzione, ma su crypto come BTC/ETH lo scarto può diventare enorme in
+// poche settimane. Per gli asset qui sotto, invece del numero fisso, si
+// salva k = controvalore_ordine_di_riferimento / prezzo_di_riferimento (dal
+// ticket reale CMC Markets), e il controvalore vero si ricalcola per ogni
+// segnale come k × prezzo di entry di QUEL segnale — scala sempre da solo,
+// niente più da aggiornare manualmente ad ogni variazione di prezzo.
+const orderFactorMap = {
+  // BTCUSD: quantità 3, margine 50%, prezzo $80.780,00 il 18/09/2026 ->
+  // margine €1.056,87 / ordine €2.113,74 (ticket reale CMC Markets)
+  'CMCMARKETS:BTCUSD': { k: 2113.74 / 80780, marginPct: 0.5 },
+  // ETHUSD: quantità 20, margine 50%, prezzo $2.584,50 il 18/09/2026 ->
+  // margine €1.127,37 / ordine €2.254,74 (ticket reale CMC Markets)
+  'CMCMARKETS:ETHUSD': { k: 2254.74 / 2584.50, marginPct: 0.5 },
+};
+
+function getMarginOrder(asset, entry) {
+  const f = orderFactorMap[asset];
+  if (f && entry) {
+    const order = +(f.k * entry).toFixed(2);
+    const margin = +(order * f.marginPct).toFixed(2);
+    return { margin, order };
+  }
+  return marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
+}
 
 const atrMap = {
   BTC: 0.018, 'CMCMARKETS:BTCUSD': 0.018,
@@ -348,7 +378,7 @@ function fmtAsset(n, asset) {
 }
 
 function calcLevels(entry, direction, asset, slOverride, tpOverride) {
-  const { margin, order } = marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
+  const { margin, order } = getMarginOrder(asset, entry);
   let sl, tp;
   let slAdjusted = false;
   const slNum = slOverride !== undefined && slOverride !== null ? parseFloat(slOverride) : null;
@@ -819,7 +849,7 @@ function evaluatePosition(pos, price) {
   }
 
   const ageHours = (new Date() - new Date(pos.openedAt)) / 3600000;
-  const { order } = marginMap[pos.asset] || { order: ORDER_DEFAULT };
+  const { order } = getMarginOrder(pos.asset, pos.entry);
 
   // Timeout 7 giorni
   if (result === null && ageHours >= 168) {
