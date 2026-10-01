@@ -204,7 +204,8 @@ async function dbInsertTrade(pos, lv, isFiltered) {
         order_eur: lv.order,
         opened_at: pos.openedAt,
         filtered: isFiltered === true,
-        proxy_ratio: pos.proxyRatio || null
+        proxy_ratio: pos.proxyRatio || null,
+        basis_ratio: pos.basisRatio || null
       })
     });
     const data = await res.json();
@@ -314,7 +315,8 @@ async function reloadOpenPositions() {
         tp: parseFloat(r.tp),
         openedAt: new Date(r.opened_at),
         dbId: r.id,
-        proxyRatio: r.proxy_ratio ? parseFloat(r.proxy_ratio) : null
+        proxyRatio: r.proxy_ratio ? parseFloat(r.proxy_ratio) : null,
+        basisRatio: r.basis_ratio ? parseFloat(r.basis_ratio) : null
       };
       if (r.filtered === true) { shadowPositions.push(pos); ombra++; }
       else { positions.push(pos); reali++; }
@@ -434,6 +436,21 @@ function calcLevels(entry, direction, asset, slOverride, tpOverride) {
   };
 }
 
+// Simbolo Yahoo (future o azione) usato per controllare SL/TP
+const YAHOO_MAP = {
+  XAU: 'GC=F',
+  'CMCMARKETS:GOLD': 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
+  XAGUSD: 'SI=F',
+  'CMCMARKETS:SILVER': 'SI=F', 'CMCMARKETS:SILVERU2026': 'SI=F',
+  SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
+  NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
+  'PEPPERSTONE:US500': 'ES=F', US500: 'ES=F',
+  USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
+  'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
+  'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+};
+function getYahooSymbol(asset) { return YAHOO_MAP[asset] || null; }
+
 async function getPrice(asset) {
   try {
 
@@ -493,22 +510,11 @@ async function getPrice(asset) {
 
     // Yahoo Finance — prezzo reale di mercato: commodity, indici, futures, azioni.
     // Controllato PRIMA del proxy ETF: è la fonte più accurata quando disponibile.
-    const yahooMap = {
-      XAU: 'GC=F',
-      'CMCMARKETS:GOLD': 'GC=F', 'CMCMARKETS:GOLDQ2026': 'GC=F',
-      XAGUSD: 'SI=F',
-      'CMCMARKETS:SILVER': 'SI=F', 'CMCMARKETS:SILVERU2026': 'SI=F',
-      SILVERN2026: 'SI=F', 'CMCMARKETS:SILVERN2026': 'SI=F',
-      NAS100: 'NQ=F', US100: 'NQ=F', 'FOREXCOM:NAS100': 'NQ=F',
-      'PEPPERSTONE:US500': 'ES=F', US500: 'ES=F',
-      USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
-      'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
-      'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
-    };
+    const yahooMap = YAHOO_MAP;
     if (yahooMap[asset]) {
       const symbol = yahooMap[asset];
       const cached = priceCache[symbol];
-      if (cached && (Date.now() - cached.at) < 600000) {
+      if (cached && (Date.now() - cached.at) < 170000) {
         return cached.price;
       }
 
@@ -545,7 +551,9 @@ async function getPrice(asset) {
           const pos = positions.find(p => p.asset === asset) ||
                       shadowPositions.find(p => p.asset === asset);
           if (pos && pos.proxyRatio) {
-            const stimato = proxyPrice * pos.proxyRatio;
+            // La stima da ETF è già sul cash: la riportiamo in "scala future",
+            // perché checkPositions() applicherà di nuovo basisRatio.
+            const stimato = proxyPrice * pos.proxyRatio / (pos.basisRatio || 1);
             console.warn('Yahoo non disponibile da oltre 1h, uso stima da proxy ETF per', asset, ':', stimato);
             return roundPrice(stimato, asset);
           }
@@ -872,8 +880,9 @@ async function checkPositions() {
   for (let i = positions.length - 1; i >= 0; i--) {
     const pos = positions[i];
     try {
-      const price = await getPrice(pos.asset);
-      if (price === null) continue;
+      const rawPrice = await getPrice(pos.asset);
+      if (rawPrice === null) continue;
+      const price = pos.basisRatio ? rawPrice * pos.basisRatio : rawPrice;
       const out = evaluatePosition(pos, price);
       if (!out) continue;
 
@@ -907,8 +916,9 @@ async function checkPositions() {
   for (let i = shadowPositions.length - 1; i >= 0; i--) {
     const pos = shadowPositions[i];
     try {
-      const price = await getPrice(pos.asset);
-      if (price === null) continue;
+      const rawPrice = await getPrice(pos.asset);
+      if (rawPrice === null) continue;
+      const price = pos.basisRatio ? rawPrice * pos.basisRatio : rawPrice;
       const out = evaluatePosition(pos, price);
       if (!out) continue;
 
@@ -1169,10 +1179,32 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
+    // Calibrazione base future-cash: per gli asset controllati su un future
+    // Yahoo (GC=F, CL=F, ...) salviamo il rapporto entry/prezzo future al
+    // momento dell'apertura. Nei controlli SL/TP il prezzo del future viene
+    // moltiplicato per questo rapporto, così si confronta il CASH stimato con
+    // livelli calcolati sul cash, invece di un future che può stare stabilmente
+    // decine di punti sopra/sotto (contango/backwardation).
+    let basisRatio = null;
+    if (FUTURES_SL_CONFIRM_ASSETS.has(assetUp)) {
+      delete priceCache[getYahooSymbol(assetUp)];
+      const futPrice = await getPrice(assetUp);
+      if (futPrice && futPrice > 0) {
+        const r = entryNum / futPrice;
+        if (r > 0.9 && r < 1.1) {
+          basisRatio = r;
+          console.log('Base future calibrata:', assetUp, '| entry:', entryNum,
+            '| future:', futPrice, '| ratio:', r.toFixed(5));
+        } else {
+          console.warn('Ratio base anomalo, ignorato:', assetUp, r);
+        }
+      }
+    }
+
     const pos = {
       asset: assetUp, direction: finalDir, entry: entryNum,
       sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue,
-      proxyRatio: proxyRatio
+      proxyRatio: proxyRatio, basisRatio: basisRatio
     };
 
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
