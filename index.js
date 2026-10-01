@@ -3,6 +3,10 @@ const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
+// TradingView invia il messaggio come text/plain quando NON è un JSON valido
+// (es. un {{plot_N}} che vale NaN o è vuoto). Senza questo parser quei
+// segnali arrivavano come body vuoto e venivano scartati come SCONOSCIUTO.
+app.use(express.text({ type: ['text/plain', 'text/*'] }));
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
@@ -1098,13 +1102,33 @@ async function pollTelegram() {
 }
 app.post('/webhook', async (req, res) => {
   try {
-    const { asset, direction, entry, sl, tp, trend } = req.body;
-    console.log('Webhook ricevuto:', JSON.stringify(req.body));
+    let body = req.body;
+    let rawText = null;
+    if (typeof body === 'string') {
+      rawText = body;
+      try {
+        // Ripara i placeholder TradingView non numerici più comuni
+        const fixed = body
+          .replace(/:\s*NaN\b/g, ':null')
+          .replace(/:\s*(?=[,}])/g, ':null');
+        body = JSON.parse(fixed);
+        console.log('Webhook text/plain riparato:', rawText);
+      } catch (e) {
+        console.warn('Webhook text/plain NON interpretabile:', rawText);
+        body = {};
+      }
+    }
+    body = body || {};
+    const { asset, direction, entry, sl, tp, trend } = body;
+    console.log('Webhook ricevuto:', JSON.stringify(body),
+      '| content-type:', req.headers['content-type'] || '-');
 
     if (!asset || !direction || !entry) {
       console.log('Payload vuoto o incompleto — ignorato');
       logSignal({
-        asset: asset || 'SCONOSCIUTO', raw_direction: direction || null,
+        asset: asset || 'SCONOSCIUTO',
+        // per i payload illeggibili salviamo l'inizio del testo grezzo, per capire da quale alert arrivano
+        raw_direction: direction || (rawText ? 'RAW: ' + rawText.slice(0, 200) : null),
         entry: entry ? parseFloat(entry) : null,
         outcome: 'rejected_invalid_payload'
       });
