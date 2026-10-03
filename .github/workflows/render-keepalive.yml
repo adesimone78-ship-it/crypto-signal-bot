@@ -9,20 +9,40 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
+      # Lo scheduler di GitHub Actions può far partire i run con ore di ritardo:
+      # un run "di venerdì sera" può scattare sabato notte, quando il bot è già
+      # stato sospeso apposta per il weekend. Il controllo va fatto sull'ora
+      # italiana REALE del momento in cui il run parte, non su quella del cron.
+      - name: Salta nel weekend (ora italiana)
+        id: weekend
+        run: |
+          DOW=$(TZ=Europe/Rome date +%u)   # 1 = lunedì ... 6 = sabato, 7 = domenica
+          echo "Ora italiana: $(TZ=Europe/Rome date '+%a %d/%m %H:%M') (giorno $DOW)"
+          if [ "$DOW" -ge 6 ]; then
+            echo "Weekend: il bot è sospeso apposta, nessun ping e nessun redeploy."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Ping servizio per evitare spin-down
         id: ping
+        if: steps.weekend.outputs.skip != 'true'
         continue-on-error: true
         run: |
           curl -sf "https://crypto-signal-bot-89rl.onrender.com/" -o /dev/null -w "HTTP %{http_code}\n"
 
-      - name: Se il ping fallisce, forza un redeploy per auto-riparare il servizio
-        if: steps.ping.outcome == 'failure'
+      - name: Se il ping fallisce, riattiva e forza un redeploy per auto-riparare il servizio
+        if: steps.weekend.outputs.skip != 'true' && steps.ping.outcome == 'failure'
         run: |
-          echo "Ping fallito: il servizio non risponde. Forzo un redeploy per riavviarlo."
+          echo "Ping fallito in un giorno feriale: riattivo il servizio (se sospeso) e forzo un redeploy."
+          curl -sf -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/resume" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Accept: application/json" || true
           curl -sf -X POST "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Accept: application/json"
 
       - name: Segna il job come fallito se il ping era fallito (tracciato nello storico Actions)
-        if: steps.ping.outcome == 'failure'
+        if: steps.weekend.outputs.skip != 'true' && steps.ping.outcome == 'failure'
         run: exit 1
