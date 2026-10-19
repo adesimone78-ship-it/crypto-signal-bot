@@ -455,6 +455,60 @@ const YAHOO_MAP = {
 };
 function getYahooSymbol(asset) { return YAHOO_MAP[asset] || null; }
 
+// Prezzo Yahoo "fresco" con fino a 3 tentativi su due host. All'ora tonda
+// arrivano più alert insieme e Yahoo risponde spesso "Too Many Requests":
+// con un solo tentativo la calibrazione future-cash falliva ~2 volte su 3.
+async function fetchYahooFresh(symbol) {
+  const hosts = ['query1', 'query2', 'query1'];
+  for (let i = 0; i < hosts.length; i++) {
+    try {
+      const res = await fetch('https://' + hosts[i] + '.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+          'Accept': 'application/json'
+        }
+      });
+      const text = await res.text();
+      if (!text.includes('Too Many Requests')) {
+        const price = JSON.parse(text).chart.result[0].meta.regularMarketPrice;
+        if (price && price > 0) {
+          priceCache[symbol] = { price, at: Date.now() };
+          return price;
+        }
+      }
+      console.warn('Yahoo tentativo', i + 1, 'fallito per', symbol, '(' + hosts[i] + ')');
+    } catch (e) {
+      console.warn('Yahoo tentativo', i + 1, 'errore per', symbol + ':', e.message);
+    }
+    if (i < hosts.length - 1) await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+  }
+  return null;
+}
+
+// Ultimo basis_ratio noto per asset: se Yahoo non risponde all'apertura di un
+// segnale si usa quello (la base future-cash cambia lentamente, salvo il roll
+// del contratto). Prima in memoria, poi l'ultimo salvato su Supabase (max 72h).
+const lastBasisRatio = {};
+async function getFallbackBasisRatio(asset) {
+  const mem = lastBasisRatio[asset];
+  if (mem && Date.now() - mem.at < 72 * 3600000) return { r: mem.r, src: 'memoria' };
+  try {
+    const since = new Date(Date.now() - 72 * 3600000).toISOString();
+    const res = await fetch(SUPABASE_URL + '/rest/v1/trades?select=basis_ratio,opened_at' +
+      '&asset=eq.' + encodeURIComponent(asset) + '&basis_ratio=not.is.null' +
+      '&opened_at=gte.' + encodeURIComponent(since) + '&order=opened_at.desc&limit=1', {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+    });
+    const rows = await res.json();
+    if (Array.isArray(rows) && rows[0] && rows[0].basis_ratio) {
+      return { r: parseFloat(rows[0].basis_ratio), src: 'Supabase ' + rows[0].opened_at };
+    }
+  } catch (e) {
+    console.error('Errore lettura basis_ratio di riserva:', e.message);
+  }
+  return null;
+}
+
 async function getPrice(asset) {
   try {
 
@@ -477,7 +531,9 @@ async function getPrice(asset) {
         return price;
       }
       console.warn('CoinGecko risposta vuota per:', coinId, '- status:', res.status, '- body:', JSON.stringify(data));
-      if (cached) {
+      // Solo se recente (max 10 min): il 15/10 un prezzo ETH vecchio di ~14 ore
+      // ha chiuso in stop dopo 21 secondi una LONG appena aperta.
+      if (cached && (Date.now() - cached.at) < 600000) {
         console.log('Uso prezzo in cache per', coinId + ':', cached.price);
         return cached.price;
       }
@@ -522,26 +578,11 @@ async function getPrice(asset) {
         return cached.price;
       }
 
-      try {
-        const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1m&range=1d', {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-            'Accept': 'application/json'
-          }
-        });
-        const text = await res.text();
-        if (!text.includes('Too Many Requests')) {
-          const data = JSON.parse(text);
-          const price = data.chart.result[0].meta.regularMarketPrice;
-          priceCache[symbol] = { price, at: Date.now() };
-          return price;
-        }
-        console.warn('Yahoo rate limit per:', symbol);
-      } catch(e) {
-        console.warn('Yahoo errore per:', symbol, e.message);
-      }
+      const fresh = await fetchYahooFresh(symbol);
+      if (fresh !== null) return fresh;
 
-      if (cached && (Date.now() - cached.at) < 3600000) {
+      // Prezzo di riserva solo se recente: un prezzo vecchio può far scattare SL/TP finti
+      if (cached && (Date.now() - cached.at) < 900000) {
         console.log('Uso prezzo in cache per', symbol + ':', cached.price);
         return cached.price;
       }
@@ -851,7 +892,8 @@ function evaluatePosition(pos, price) {
   // "in osservazione" dal ciclo precedente, non chiudere subito — segna la
   // posizione e aspetta il prossimo controllo (3 min dopo). Se il prezzo
   // rientra prima della conferma, il flag si resetta e non succede nulla.
-  if (result === 'LOSS' && FUTURES_SL_CONFIRM_ASSETS.has(pos.asset)) {
+  // Esteso a tutti gli asset il 19/10 (anche crypto: vedi ETH 15/10).
+  if (result === 'LOSS') {
     if (!pos._slPending) {
       pos._slPending = true;
       return null;
@@ -1211,16 +1253,26 @@ app.post('/webhook', async (req, res) => {
     // decine di punti sopra/sotto (contango/backwardation).
     let basisRatio = null;
     if (FUTURES_SL_CONFIRM_ASSETS.has(assetUp)) {
-      delete priceCache[getYahooSymbol(assetUp)];
-      const futPrice = await getPrice(assetUp);
+      const futPrice = await fetchYahooFresh(getYahooSymbol(assetUp));
       if (futPrice && futPrice > 0) {
         const r = entryNum / futPrice;
         if (r > 0.9 && r < 1.1) {
           basisRatio = r;
+          lastBasisRatio[assetUp] = { r, at: Date.now() };
           console.log('Base future calibrata:', assetUp, '| entry:', entryNum,
             '| future:', futPrice, '| ratio:', r.toFixed(5));
         } else {
           console.warn('Ratio base anomalo, ignorato:', assetUp, r);
+        }
+      }
+      if (basisRatio === null) {
+        const fb = await getFallbackBasisRatio(assetUp);
+        if (fb) {
+          basisRatio = fb.r;
+          console.warn('Yahoo non disponibile: uso basis_ratio di riserva per', assetUp,
+            fb.r.toFixed(5), '(' + fb.src + ')');
+        } else {
+          console.warn('ATTENZIONE: nessun basis_ratio per', assetUp, '— SL/TP confrontati sul future grezzo');
         }
       }
     }
