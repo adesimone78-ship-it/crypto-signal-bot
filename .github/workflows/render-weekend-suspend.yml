@@ -2,7 +2,9 @@ name: Sospendi bot Render (weekend)
 
 on:
   schedule:
-    - cron: '0 22 * * 5'
+    # 23:00 UTC = sabato 00:00 ora solare / 01:00 ora legale: sempre già sabato in Italia,
+    # così il keep-alive (che salta sab/dom ora italiana) non riaccende il bot.
+    - cron: '0 23 * * 5'
   workflow_dispatch: {}
 
 jobs:
