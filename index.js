@@ -648,6 +648,18 @@ async function sendTelegram(text) {
   }
 }
 
+// Avviso breve per i segnali filtrati dal trend EMA (posizione ombra):
+// conferma che l'alert è arrivato, senza aprire un trade reale.
+function buildShadowMessage(asset, direction, entry, lv, trendValue) {
+  const fmt = (n) => fmtAsset(n, asset);
+  const shortName = asset.split(':').pop();
+  const trendTxt = trendValue === 1 ? 'RIALZISTA' : trendValue === -1 ? 'RIBASSISTA' : 'n/d';
+  return '🚫 <b>Segnale filtrato — ' + shortName + ' ' + direction + '</b>\n' +
+    'Entry ' + fmt(entry) + ' | SL ' + fmt(lv.sl) + ' | TP ' + fmt(lv.tp) + '\n' +
+    'EMA Trend: ' + trendTxt + ' (contro la direzione)\n' +
+    'Nessun trade reale: tracciato in ombra.';
+}
+
 function buildEntryMessage(asset, direction, entry, lv, stats, trendValue) {
   const isLong = direction === 'LONG';
   const emoji = isLong ? '📈' : '📉';
@@ -1296,6 +1308,7 @@ app.post('/webhook', async (req, res) => {
 
     if (isFiltered) {
       shadowPositions.push(pos);
+      await sendTelegram(buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue));
       return res.json({ ok: true, skipped: true, reason: 'contro-trend EMA', shadow: true });
     }
 
