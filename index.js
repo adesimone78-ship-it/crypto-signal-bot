@@ -209,10 +209,32 @@ async function dbInsertTrade(pos, lv, isFiltered) {
         opened_at: pos.openedAt,
         filtered: isFiltered === true,
         proxy_ratio: pos.proxyRatio || null,
-        basis_ratio: pos.basisRatio || null
+        basis_ratio: pos.basisRatio || null,
+        ...(pos.shadowType === 'duplicate' ? { shadow_type: 'duplicate' } : {})
       })
     });
-    const data = await res.json();
+    let data = await res.json();
+    // Se la colonna shadow_type non esiste ancora su Supabase, riprova senza
+    // (il trade viene comunque salvato, solo senza etichetta "doppione").
+    if (!Array.isArray(data) && pos.shadowType === 'duplicate') {
+      console.warn('Insert con shadow_type fallito, riprovo senza:', JSON.stringify(data));
+      const res2 = await fetch(SUPABASE_URL + '/rest/v1/trades', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Prefer': 'return=representation'
+        },
+        body: JSON.stringify({
+          asset: pos.asset, direction: pos.direction, entry: pos.entry,
+          sl: pos.sl, tp: pos.tp, margin: lv.margin, order_eur: lv.order,
+          opened_at: pos.openedAt, filtered: isFiltered === true,
+          proxy_ratio: pos.proxyRatio || null, basis_ratio: pos.basisRatio || null
+        })
+      });
+      data = await res2.json();
+    }
     if (data && data[0]) {
       console.log((isFiltered ? 'Trade OMBRA' : 'Trade') + ' salvato su Supabase, id:', data[0].id);
       return data[0].id;
@@ -320,7 +342,8 @@ async function reloadOpenPositions() {
         openedAt: new Date(r.opened_at),
         dbId: r.id,
         proxyRatio: r.proxy_ratio ? parseFloat(r.proxy_ratio) : null,
-        basisRatio: r.basis_ratio ? parseFloat(r.basis_ratio) : null
+        basisRatio: r.basis_ratio ? parseFloat(r.basis_ratio) : null,
+        shadowType: r.filtered === true ? (r.shadow_type === 'duplicate' ? 'duplicate' : 'ema') : null
       };
       if (r.filtered === true) { shadowPositions.push(pos); ombra++; }
       else { positions.push(pos); reali++; }
@@ -650,10 +673,19 @@ async function sendTelegram(text) {
 
 // Avviso breve per i segnali filtrati dal trend EMA (posizione ombra):
 // conferma che l'alert è arrivato, senza aprire un trade reale.
-function buildShadowMessage(asset, direction, entry, lv, trendValue) {
+function buildShadowMessage(asset, direction, entry, lv, trendValue, conflict) {
   const fmt = (n) => fmtAsset(n, asset);
   const shortName = asset.split(':').pop();
   const trendTxt = trendValue === 1 ? 'RIALZISTA' : trendValue === -1 ? 'RIBASSISTA' : 'n/d';
+  if (conflict) {
+    const ora = new Date(conflict.openedAt).toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+    const tipo = conflict.isShadow ? 'ombra' : 'reale';
+    return '⏸ <b>Segnale ombra (doppione) — ' + shortName + ' ' + direction + '</b>\n' +
+      'Già aperta: ' + tipo + ' ' + conflict.direction + ' @ ' + fmt(conflict.entry) + ' (' + ora + ')\n' +
+      'Entry ' + fmt(entry) + ' | SL ' + fmt(lv.sl) + ' | TP ' + fmt(lv.tp) + '\n' +
+      'EMA Trend: ' + trendTxt + '\n' +
+      'Nessun trade reale: tracciato in ombra.';
+  }
   return '🚫 <b>Segnale filtrato — ' + shortName + ' ' + direction + '</b>\n' +
     'Entry ' + fmt(entry) + ' | SL ' + fmt(lv.sl) + ' | TP ' + fmt(lv.tp) + '\n' +
     'EMA Trend: ' + trendTxt + ' (contro la direzione)\n' +
@@ -758,9 +790,10 @@ async function buildStatsMessage(trades) {
   if (!Array.isArray(trades)) return '📊 Errore lettura database.';
 
   const real = trades.filter(t => t.result !== null && t.filtered !== true);
-  const shadow = trades.filter(t => t.result !== null && t.filtered === true);
+  const shadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type !== 'duplicate');
+  const dupShadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type === 'duplicate');
 
-  if (real.length === 0 && shadow.length === 0) {
+  if (real.length === 0 && shadow.length === 0 && dupShadow.length === 0) {
     return '📊 <b>STATISTICHE</b>\n━━━━━━━━━━━━━━━━━━\nNessun trade chiuso nel database.';
   }
 
@@ -824,6 +857,18 @@ async function buildStatsMessage(trades) {
     }
   }
 
+  // === DOPPIONI (segnali arrivati con una posizione già aperta) ===
+  msg += '━━━━━━━━━━━━━━━━━━\n';
+  msg += '⏸ <b>DOPPIONI (ombra)</b>\n';
+  if (dupShadow.length === 0) {
+    msg += 'Nessun doppione ancora concluso.\n';
+  } else {
+    const d = statBlock(dupShadow);
+    msg += '📈 Conclusi: ' + d.count + ' | ✅ ' + d.wins + ' | ❌ ' + d.losses + '\n';
+    msg += '🎯 Win Rate: <b>' + d.rate + '%</b>\n';
+    msg += '💶 P&L simulato: <b>' + (d.pnl >= 0 ? '+' : '') + '€' + d.pnl.toFixed(2) + '</b>\n';
+  }
+
   msg += '━━━━━━━━━━━━━━━━━━';
   return msg;
 }
@@ -863,7 +908,8 @@ function buildOpenPositions() {
       const mins = duration % 60;
       const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
       msg += '• ' + pos.asset.split(':').pop() + ' ' + pos.direction +
-        ' @ $' + fmt(pos.entry) + ' — ' + durStr + '\n';
+        ' @ $' + fmt(pos.entry) + ' — ' + durStr +
+        (pos.shadowType === 'duplicate' ? ' (doppione)' : '') + '\n';
     });
   }
 
@@ -1118,7 +1164,7 @@ async function pollTelegram() {
               ? ' (' + (parseFloat(t.pnl_eur) >= 0 ? '+' : '') + '€' + parseFloat(t.pnl_eur).toFixed(2) + ')'
               : '';
             const ora = new Date(t.opened_at).toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
-            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + '\n';
+            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + (t.shadow_type === 'duplicate' ? ' ⏸' : '') + '\n';
           });
           if (shadow.length > 12) msg += '... e altri ' + (shadow.length - 12) + '\n';
           msg += '━━━━━━━━━━━━━━━━━━\nUsa /stats per il verdetto sul filtro.';
@@ -1200,7 +1246,7 @@ app.post('/webhook', async (req, res) => {
     const conflictingPos = positions.find(p => p.asset === assetUp) ||
                             shadowPositions.find(p => p.asset === assetUp);
     if (conflictingPos) {
-      console.log('Segnale ignorato — posizione già aperta su:', assetUp);
+      console.log('Doppione → tracciato in ombra (posizione già aperta su:', assetUp + ')');
       logSignal({
         asset: assetUp, raw_direction: dir, entry: entryNum,
         sl_raw: sl !== undefined ? parseFloat(sl) : null,
@@ -1214,8 +1260,13 @@ app.post('/webhook', async (req, res) => {
         conflicting_opened_at: conflictingPos.openedAt,
         conflicting_trade_id: conflictingPos.dbId || null
       });
-      return res.json({ ok: true, skipped: true, reason: 'posizione già aperta' });
     }
+    const isDuplicate = !!conflictingPos;
+    const conflictInfo = isDuplicate ? {
+      direction: conflictingPos.direction, entry: conflictingPos.entry,
+      openedAt: conflictingPos.openedAt,
+      isShadow: shadowPositions.includes(conflictingPos)
+    } : null;
 
     const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
     const finalDir = lv.correctedDirection;
@@ -1246,6 +1297,8 @@ app.post('/webhook', async (req, res) => {
           '| trend:', trendRialzista ? 'RIALZISTA' : 'RIBASSISTA');
       }
     }
+
+    if (isDuplicate) isFiltered = true;  // doppione → sempre ombra
 
     let proxyRatio = null;
     if (proxyMap[assetUp] && FINNHUB_KEY) {
@@ -1292,13 +1345,14 @@ app.post('/webhook', async (req, res) => {
     const pos = {
       asset: assetUp, direction: finalDir, entry: entryNum,
       sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue,
-      proxyRatio: proxyRatio, basisRatio: basisRatio
+      proxyRatio: proxyRatio, basisRatio: basisRatio,
+      shadowType: isDuplicate ? 'duplicate' : (isFiltered ? 'ema' : null)
     };
 
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
     pos.dbId = dbId;
 
-    logSignal({
+    if (!isDuplicate) logSignal({
       asset: assetUp, raw_direction: dir, entry: entryNum,
       sl_raw: sl !== undefined ? parseFloat(sl) : null,
       tp_raw: tp !== undefined ? parseFloat(tp) : null,
@@ -1308,8 +1362,9 @@ app.post('/webhook', async (req, res) => {
 
     if (isFiltered) {
       shadowPositions.push(pos);
-      await sendTelegram(buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue));
-      return res.json({ ok: true, skipped: true, reason: 'contro-trend EMA', shadow: true });
+      await sendTelegram(buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue, conflictInfo));
+      return res.json({ ok: true, skipped: true, shadow: true,
+        reason: isDuplicate ? 'posizione già aperta' : 'contro-trend EMA' });
     }
 
     const stats = await getWinRates(assetUp);
