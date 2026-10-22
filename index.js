@@ -1243,8 +1243,9 @@ app.post('/webhook', async (req, res) => {
     const entryNum = roundPrice(parseFloat(entry), assetUp);
     const trendRaw = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
 
-    const conflictingPos = positions.find(p => p.asset === assetUp) ||
-                            shadowPositions.find(p => p.asset === assetUp);
+    // Doppione solo se c'è già una posizione REALE sull'asset: le ombra servono
+    // solo per le statistiche e non devono bloccare un nuovo trade reale.
+    const conflictingPos = positions.find(p => p.asset === assetUp);
     if (conflictingPos) {
       console.log('Doppione → tracciato in ombra (posizione già aperta su:', assetUp + ')');
       logSignal({
