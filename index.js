@@ -46,6 +46,9 @@ const marginMap = {
   'NASDAQ:TSLA':                 { margin: 612.36,   order: 3061.80   },
   TSLA:                          { margin: 612.36,   order: 3061.80   },
   'NASDAQ:NVDA':                 { margin: 607.92,   order: 3039.60   },
+  // In prova (solo ombra) dal 20/11/2026 — size indicative, da calibrare su un ticket reale
+  'CMCMARKETS:XRPUSD':           { margin: 1100.00,  order: 2200.00   },
+  'CMCMARKETS:PLATINUM':         { margin: 500.00,   order: 10000.00  },
   NVDA:                          { margin: 607.92,   order: 3039.60   },
 };
 
@@ -90,6 +93,7 @@ const atrMap = {
   'PEPPERSTONE:US500': 0.0035, US500: 0.0035,
   USOIL: 0.008, 'EASYMARKETS:OILUSD': 0.008,
   'NASDAQ:TSLA': 0.015, TSLA: 0.015,
+  'CMCMARKETS:XRPUSD': 0.022, 'CMCMARKETS:PLATINUM': 0.006,
   DEFAULT: 0.018
 };
 
@@ -106,6 +110,7 @@ const minSlMap = {
   'PEPPERSTONE:US500': 0.008, US500: 0.008,
   'NASDAQ:TSLA': 0.020, TSLA: 0.020,
   'NASDAQ:NVDA': 0.020, NVDA: 0.020,
+  'CMCMARKETS:XRPUSD': 0.025, 'CMCMARKETS:PLATINUM': 0.010,
   DEFAULT: 0.010
 };
 
@@ -120,6 +125,7 @@ const roundMap = {
   'PEPPERSTONE:US500': 1, US500: 1,
   'NASDAQ:TSLA': 0.5, TSLA: 0.5,
   'NASDAQ:NVDA': 0.5, NVDA: 0.5,
+  'CMCMARKETS:XRPUSD': 0.0001, 'CMCMARKETS:PLATINUM': 0.1,
   DEFAULT: 0.01
 };
 
@@ -153,7 +159,15 @@ const FUTURES_SL_CONFIRM_ASSETS = new Set([
   'SILVERN2026', 'CMCMARKETS:SILVERN2026',
   'NAS100', 'US100', 'FOREXCOM:NAS100',
   'PEPPERSTONE:US500', 'US500',
-  'USOIL', 'EASYMARKETS:OILUSD'
+  'USOIL', 'EASYMARKETS:OILUSD',
+  'CMCMARKETS:PLATINUM'
+]);
+
+// Asset "in prova": i segnali che sarebbero trade reali vengono tracciati
+// come ombra (shadow_type 'test'), con un messaggio 🧪, senza trade reale.
+// NAS100 dal 20/11/2026 (perdeva sui dati reali), XRP e PLATINUM nuovi.
+const SHADOW_ONLY_ASSETS = new Set([
+  'FOREXCOM:NAS100', 'CMCMARKETS:XRPUSD', 'CMCMARKETS:PLATINUM'
 ]);
 
 // Proxy ETF per asset non coperti dalle API gratuite (futures/indici)
@@ -164,7 +178,8 @@ const proxyMap = {
   SILVERN2026: 'SLV',
   USOIL: 'USO', 'EASYMARKETS:OILUSD': 'USO',
   NAS100: 'QQQ', US100: 'QQQ', 'FOREXCOM:NAS100': 'QQQ',
-  'PEPPERSTONE:US500': 'SPY', US500: 'SPY'
+  'PEPPERSTONE:US500': 'SPY', US500: 'SPY',
+  'CMCMARKETS:PLATINUM': 'PPLT'
 };
 
 // Legge il prezzo di un ETF da Finnhub (cache 5 minuti)
@@ -210,13 +225,13 @@ async function dbInsertTrade(pos, lv, isFiltered) {
         filtered: isFiltered === true,
         proxy_ratio: pos.proxyRatio || null,
         basis_ratio: pos.basisRatio || null,
-        ...(pos.shadowType === 'duplicate' ? { shadow_type: 'duplicate' } : {})
+        ...((pos.shadowType === 'duplicate' || pos.shadowType === 'test') ? { shadow_type: pos.shadowType } : {})
       })
     });
     let data = await res.json();
     // Se la colonna shadow_type non esiste ancora su Supabase, riprova senza
     // (il trade viene comunque salvato, solo senza etichetta "doppione").
-    if (!Array.isArray(data) && pos.shadowType === 'duplicate') {
+    if (!Array.isArray(data) && (pos.shadowType === 'duplicate' || pos.shadowType === 'test')) {
       console.warn('Insert con shadow_type fallito, riprovo senza:', JSON.stringify(data));
       const res2 = await fetch(SUPABASE_URL + '/rest/v1/trades', {
         method: 'POST',
@@ -343,7 +358,7 @@ async function reloadOpenPositions() {
         dbId: r.id,
         proxyRatio: r.proxy_ratio ? parseFloat(r.proxy_ratio) : null,
         basisRatio: r.basis_ratio ? parseFloat(r.basis_ratio) : null,
-        shadowType: r.filtered === true ? (r.shadow_type === 'duplicate' ? 'duplicate' : 'ema') : null
+        shadowType: r.filtered === true ? ((r.shadow_type === 'duplicate' || r.shadow_type === 'test') ? r.shadow_type : 'ema') : null
       };
       if (r.filtered === true) { shadowPositions.push(pos); ombra++; }
       else { positions.push(pos); reali++; }
@@ -388,7 +403,7 @@ function getAssetSuffix(asset) {
     'CMCMARKETS:GOLD', 'CMCMARKETS:GOLDQ2026',
     'CMCMARKETS:SILVER', 'CMCMARKETS:SILVERU2026',
     'CMCMARKETS:SILVERN2026', 'SILVERN2026',
-    'PEPPERSTONE:US500', 'US500'
+    'PEPPERSTONE:US500', 'US500', 'CMCMARKETS:PLATINUM'
   ];
   if (fiat.includes(asset)) return 'USD';
   if (asset === 'NASDAQ:TSLA' || asset === 'TSLA') return 'USD';
@@ -474,7 +489,8 @@ const YAHOO_MAP = {
   'PEPPERSTONE:US500': 'ES=F', US500: 'ES=F',
   USOIL: 'CL=F', 'EASYMARKETS:OILUSD': 'CL=F',
   'NASDAQ:TSLA': 'TSLA', TSLA: 'TSLA',
-  'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA'
+  'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA',
+  'CMCMARKETS:PLATINUM': 'PL=F'
 };
 function getYahooSymbol(asset) { return YAHOO_MAP[asset] || null; }
 
@@ -538,7 +554,8 @@ async function getPrice(asset) {
     const cryptoMap = {
       BTC: 'bitcoin', 'CMCMARKETS:BTCUSD': 'bitcoin',
       ETH: 'ethereum', 'CMCMARKETS:ETHUSD': 'ethereum',
-      SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple'
+      SOL: 'solana', BNB: 'binancecoin', XRP: 'ripple',
+      'CMCMARKETS:XRPUSD': 'ripple'
     };
     if (cryptoMap[asset]) {
       const coinId = cryptoMap[asset];
@@ -720,10 +737,16 @@ async function sendTelegram(text, chatId) {
 
 // Avviso breve per i segnali filtrati dal trend EMA (posizione ombra):
 // conferma che l'alert è arrivato, senza aprire un trade reale.
-function buildShadowMessage(asset, direction, entry, lv, trendValue, conflict) {
+function buildShadowMessage(asset, direction, entry, lv, trendValue, conflict, isTest) {
   const fmt = (n) => fmtAsset(n, asset);
   const shortName = asset.split(':').pop();
   const trendTxt = trendValue === 1 ? 'RIALZISTA' : trendValue === -1 ? 'RIBASSISTA' : 'n/d';
+  if (isTest) {
+    return '🧪 <b>Segnale in prova — ' + shortName + ' ' + direction + '</b>\n' +
+      'Entry ' + fmt(entry) + ' | SL ' + fmt(lv.sl) + ' | TP ' + fmt(lv.tp) + '\n' +
+      'EMA Trend: ' + trendTxt + ' ✅\n' +
+      'Asset in prova: tracciato in ombra, nessun trade reale.';
+  }
   if (conflict) {
     const ora = new Date(conflict.openedAt).toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
     const tipo = conflict.isShadow ? 'ombra' : 'reale';
@@ -837,7 +860,8 @@ async function buildStatsMessage(trades) {
   if (!Array.isArray(trades)) return '📊 Errore lettura database.';
 
   const real = trades.filter(t => t.result !== null && t.filtered !== true);
-  const shadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type !== 'duplicate');
+  const shadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type !== 'duplicate' && t.shadow_type !== 'test');
+  const testShadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type === 'test');
   const dupShadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type === 'duplicate');
 
   if (real.length === 0 && shadow.length === 0 && dupShadow.length === 0) {
@@ -916,6 +940,24 @@ async function buildStatsMessage(trades) {
     msg += '💶 P&L simulato: <b>' + (d.pnl >= 0 ? '+' : '') + '€' + d.pnl.toFixed(2) + '</b>\n';
   }
 
+  // === ASSET IN PROVA (solo ombra) ===
+  msg += '━━━━━━━━━━━━━━━━━━\n';
+  msg += '🧪 <b>ASSET IN PROVA (solo ombra)</b>\n';
+  if (testShadow.length === 0) {
+    msg += 'Nessun trade di prova ancora concluso.\n';
+  } else {
+    const byA = {};
+    for (const t of testShadow) {
+      const k = t.asset.split(':').pop();
+      if (!byA[k]) byA[k] = [];
+      byA[k].push(t);
+    }
+    for (const [k, arr] of Object.entries(byA)) {
+      const b = statBlock(arr);
+      msg += '• <b>' + k + '</b>: ' + b.count + ' trade | ' + b.rate + '% | ' + (b.pnl >= 0 ? '+' : '') + '€' + b.pnl.toFixed(2) + '\n';
+    }
+  }
+
   msg += '━━━━━━━━━━━━━━━━━━';
   return msg;
 }
@@ -956,7 +998,7 @@ function buildOpenPositions() {
       const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
       msg += '• ' + pos.asset.split(':').pop() + ' ' + pos.direction +
         ' @ $' + fmt(pos.entry) + ' — ' + durStr +
-        (pos.shadowType === 'duplicate' ? ' (doppione)' : '') + '\n';
+        (pos.shadowType === 'duplicate' ? ' (doppione)' : pos.shadowType === 'test' ? ' (prova)' : '') + '\n';
     });
   }
 
@@ -1233,7 +1275,7 @@ async function pollTelegram() {
               ? ' (' + (parseFloat(t.pnl_eur) >= 0 ? '+' : '') + '€' + parseFloat(t.pnl_eur).toFixed(2) + ')'
               : '';
             const ora = new Date(t.opened_at).toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
-            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + (t.shadow_type === 'duplicate' ? ' ⏸' : '') + '\n';
+            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + (t.shadow_type === 'duplicate' ? ' ⏸' : t.shadow_type === 'test' ? ' 🧪' : '') + '\n';
           });
           if (shadow.length > 12) msg += '... e altri ' + (shadow.length - 12) + '\n';
           msg += '━━━━━━━━━━━━━━━━━━\nUsa /stats per il verdetto sul filtro.';
@@ -1374,6 +1416,13 @@ app.post('/webhook', async (req, res) => {
 
     if (isDuplicate) isFiltered = true;  // doppione → sempre ombra
 
+    // Asset in prova: il segnale sarebbe un trade reale → ombra 'test'
+    const isTest = !isFiltered && SHADOW_ONLY_ASSETS.has(assetUp);
+    if (isTest) {
+      isFiltered = true;
+      console.log('Asset in prova (solo ombra):', assetUp, finalDir);
+    }
+
     let proxyRatio = null;
     if (proxyMap[assetUp] && FINNHUB_KEY) {
       const proxyPrice = await getFinnhubPrice(proxyMap[assetUp]);
@@ -1420,7 +1469,7 @@ app.post('/webhook', async (req, res) => {
       asset: assetUp, direction: finalDir, entry: entryNum,
       sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue,
       proxyRatio: proxyRatio, basisRatio: basisRatio,
-      shadowType: isDuplicate ? 'duplicate' : (isFiltered ? 'ema' : null)
+      shadowType: isDuplicate ? 'duplicate' : isTest ? 'test' : (isFiltered ? 'ema' : null)
     };
 
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
@@ -1431,14 +1480,14 @@ app.post('/webhook', async (req, res) => {
       sl_raw: sl !== undefined ? parseFloat(sl) : null,
       tp_raw: tp !== undefined ? parseFloat(tp) : null,
       trend_raw: trendRaw,
-      outcome: isFiltered ? 'filtered_ema' : 'executed'
+      outcome: isTest ? 'shadow_test' : isFiltered ? 'filtered_ema' : 'executed'
     });
 
     if (isFiltered) {
       shadowPositions.push(pos);
-      await sendTelegram(buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue, conflictInfo));
+      await sendTelegram(buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue, conflictInfo, isTest));
       return res.json({ ok: true, skipped: true, shadow: true,
-        reason: isDuplicate ? 'posizione già aperta' : 'contro-trend EMA' });
+        reason: isDuplicate ? 'posizione già aperta' : isTest ? 'asset in prova' : 'contro-trend EMA' });
     }
 
     const stats = await getWinRates(assetUp);
