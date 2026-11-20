@@ -163,6 +163,22 @@ const FUTURES_SL_CONFIRM_ASSETS = new Set([
   'CMCMARKETS:PLATINUM'
 ]);
 
+// Strategia RSI2 (Larry Connors), giornaliera su indici, dal 20/11/2026:
+// entra long con chiusura > SMA200 e RSI(2) < 10, esce quando la chiusura
+// supera la SMA5 (segnale "EXIT" da TradingView). Nessun TP, niente timeout
+// 7 giorni, solo uno stop di emergenza largo. In prova (solo ombra) finché
+// i dati reali non confermano il backtest.
+const RSI2_EMERGENCY_SL = 0.08;
+const RSI2_SHADOW_ONLY = true;
+
+function buildRsi2EntryMessage(asset, direction, entry, lv, isTest) {
+  const fmt = (n) => fmtAsset(n, asset);
+  return (isTest ? '🧪 ' : '') + '🔔 <b>RSI2 — ENTRATA ' + direction + ' ' + asset.split(':').pop() + '</b>\n' +
+    'Entry ' + fmt(entry) + ' | stop emergenza ' + fmt(lv.sl) + ' (−' + (RSI2_EMERGENCY_SL * 100) + '%)\n' +
+    'Uscita: su segnale, quando la chiusura supera la media a 5 giorni.\n' +
+    (isTest ? 'Strategia in prova: tracciata in ombra, nessun trade reale.' : 'Size: €' + lv.order.toFixed(2) + ' (margine €' + lv.margin.toFixed(2) + ')');
+}
+
 // Asset "in prova": i segnali che sarebbero trade reali vengono tracciati
 // come ombra (shadow_type 'test'), con un messaggio 🧪, senza trade reale.
 // NAS100 dal 20/11/2026 (perdeva sui dati reali), XRP e PLATINUM nuovi.
@@ -223,6 +239,7 @@ async function dbInsertTrade(pos, lv, isFiltered) {
         order_eur: lv.order,
         opened_at: pos.openedAt,
         filtered: isFiltered === true,
+        strategy: pos.strategy || 'TEMA',
         proxy_ratio: pos.proxyRatio || null,
         basis_ratio: pos.basisRatio || null,
         ...((pos.shadowType === 'duplicate' || pos.shadowType === 'test') ? { shadow_type: pos.shadowType } : {})
@@ -358,7 +375,8 @@ async function reloadOpenPositions() {
         dbId: r.id,
         proxyRatio: r.proxy_ratio ? parseFloat(r.proxy_ratio) : null,
         basisRatio: r.basis_ratio ? parseFloat(r.basis_ratio) : null,
-        shadowType: r.filtered === true ? ((r.shadow_type === 'duplicate' || r.shadow_type === 'test') ? r.shadow_type : 'ema') : null
+        shadowType: r.filtered === true ? ((r.shadow_type === 'duplicate' || r.shadow_type === 'test') ? r.shadow_type : 'ema') : null,
+        strategy: r.strategy || 'TEMA'
       };
       if (r.filtered === true) { shadowPositions.push(pos); ombra++; }
       else { positions.push(pos); reali++; }
@@ -948,7 +966,7 @@ async function buildStatsMessage(trades) {
   } else {
     const byA = {};
     for (const t of testShadow) {
-      const k = t.asset.split(':').pop();
+      const k = t.asset.split(':').pop() + (t.strategy === 'RSI2' ? ' RSI2' : '');
       if (!byA[k]) byA[k] = [];
       byA[k].push(t);
     }
@@ -1053,7 +1071,7 @@ function evaluatePosition(pos, price) {
   const { order } = getMarginOrder(pos.asset, pos.entry);
 
   // Timeout 7 giorni
-  if (result === null && ageHours >= 168) {
+  if (result === null && ageHours >= 168 && pos.strategy !== 'RSI2') {
     const priceDiff = pos.direction === 'LONG' ? price - pos.entry : pos.entry - price;
     const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
     return { result: pnlEur >= 0 ? 'WIN' : 'LOSS', closePrice: price, pnlEur, timeout: true };
@@ -1335,6 +1353,7 @@ app.post('/webhook', async (req, res) => {
     }
     body = body || {};
     const { asset, direction, entry, sl, tp, trend } = body;
+    const strategy = (body.strategy || 'TEMA').toString().toUpperCase();
     console.log('Webhook ricevuto:', JSON.stringify(body),
       '| content-type:', req.headers['content-type'] || '-');
 
@@ -1358,9 +1377,33 @@ app.post('/webhook', async (req, res) => {
     const entryNum = roundPrice(parseFloat(entry), assetUp);
     const trendRaw = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
 
-    // Doppione solo se c'è già una posizione REALE sull'asset: le ombra servono
-    // solo per le statistiche e non devono bloccare un nuovo trade reale.
-    const conflictingPos = positions.find(p => p.asset === assetUp);
+    // === Strategia RSI2 (Connors): uscita su segnale ===
+    if (strategy === 'RSI2' && dir === 'EXIT') {
+      const toClose = positions.concat(shadowPositions)
+        .filter(p => p.asset === assetUp && p.strategy === 'RSI2');
+      logSignal({ asset: assetUp, raw_direction: 'EXIT RSI2', entry: entryNum, trend_raw: trendRaw,
+        outcome: toClose.length ? 'exit_rsi2' : 'exit_rsi2_nessuna_posizione' });
+      for (const pos of toClose) {
+        const { order } = getMarginOrder(pos.asset, pos.entry);
+        const diff = pos.direction === 'LONG' ? entryNum - pos.entry : pos.entry - entryNum;
+        const pnlEur = +(diff / pos.entry * order).toFixed(2);
+        const result = pnlEur >= 0 ? 'WIN' : 'LOSS';
+        await dbCloseTrade(pos.dbId, entryNum, result, pnlEur);
+        const ri = positions.indexOf(pos); if (ri >= 0) positions.splice(ri, 1);
+        const si = shadowPositions.indexOf(pos); if (si >= 0) shadowPositions.splice(si, 1);
+        const ore = Math.round((Date.now() - new Date(pos.openedAt)) / 3600000);
+        const pct = (diff / pos.entry * 100).toFixed(2);
+        await sendTelegram((pos.shadowType ? '🧪 ' : '') + '🔔 <b>RSI2 — USCITA ' + assetUp.split(':').pop() + '</b>\n' +
+          'Ingresso ' + fmtAsset(pos.entry, assetUp) + ' → uscita ' + fmtAsset(entryNum, assetUp) + ' (' + (diff >= 0 ? '+' : '') + pct + '%)\n' +
+          (result === 'WIN' ? '✅' : '❌') + ' P&L' + (pos.shadowType ? ' simulato' : '') + ': <b>' + (pnlEur >= 0 ? '+€' : '-€') + Math.abs(pnlEur).toFixed(2) + '</b> | durata ' + ore + 'h\n' +
+          'Motivo: chiusura sopra la media a 5 giorni.');
+      }
+      return res.json({ ok: true, exit: true, closed: toClose.length });
+    }
+
+    // Doppione solo se c'è già una posizione REALE sull'asset (della stessa
+    // strategia): le ombra servono solo per le statistiche.
+    const conflictingPos = positions.find(p => p.asset === assetUp && (p.strategy || 'TEMA') === strategy);
     if (conflictingPos) {
       console.log('Doppione → tracciato in ombra (posizione già aperta su:', assetUp + ')');
       logSignal({
@@ -1384,7 +1427,11 @@ app.post('/webhook', async (req, res) => {
       isShadow: shadowPositions.includes(conflictingPos)
     } : null;
 
-    const lv = calcLevels(entryNum, dir, assetUp, sl, tp);
+    const lv = strategy === 'RSI2'
+      ? calcLevels(entryNum, dir, assetUp,
+          dir === 'LONG' ? entryNum * (1 - RSI2_EMERGENCY_SL) : entryNum * (1 + RSI2_EMERGENCY_SL),
+          dir === 'LONG' ? entryNum * 10 : entryNum / 10)
+      : calcLevels(entryNum, dir, assetUp, sl, tp);
     const finalDir = lv.correctedDirection;
 
     const slRatio = lv.sl / entryNum;
@@ -1403,7 +1450,7 @@ app.post('/webhook', async (req, res) => {
     const trendValue = trendRaw;
     let isFiltered = false;
 
-    if (TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue !== 0) {
+    if (strategy !== 'RSI2' && TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue !== 0) {
       const trendRialzista = trendValue > 0;
       const controTrend = (finalDir === 'LONG' && !trendRialzista) ||
                           (finalDir === 'SHORT' && trendRialzista);
@@ -1417,7 +1464,7 @@ app.post('/webhook', async (req, res) => {
     if (isDuplicate) isFiltered = true;  // doppione → sempre ombra
 
     // Asset in prova: il segnale sarebbe un trade reale → ombra 'test'
-    const isTest = !isFiltered && SHADOW_ONLY_ASSETS.has(assetUp);
+    const isTest = !isFiltered && (SHADOW_ONLY_ASSETS.has(assetUp) || RSI2_SHADOW_ONLY && strategy === 'RSI2');
     if (isTest) {
       isFiltered = true;
       console.log('Asset in prova (solo ombra):', assetUp, finalDir);
@@ -1469,7 +1516,8 @@ app.post('/webhook', async (req, res) => {
       asset: assetUp, direction: finalDir, entry: entryNum,
       sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue,
       proxyRatio: proxyRatio, basisRatio: basisRatio,
-      shadowType: isDuplicate ? 'duplicate' : isTest ? 'test' : (isFiltered ? 'ema' : null)
+      shadowType: isDuplicate ? 'duplicate' : isTest ? 'test' : (isFiltered ? 'ema' : null),
+      strategy: strategy === 'RSI2' ? 'RSI2' : 'TEMA'
     };
 
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
@@ -1485,14 +1533,18 @@ app.post('/webhook', async (req, res) => {
 
     if (isFiltered) {
       shadowPositions.push(pos);
-      await sendTelegram(buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue, conflictInfo, isTest));
+      await sendTelegram(strategy === 'RSI2'
+        ? buildRsi2EntryMessage(assetUp, finalDir, entryNum, lv, isTest)
+        : buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue, conflictInfo, isTest));
       return res.json({ ok: true, skipped: true, shadow: true,
         reason: isDuplicate ? 'posizione già aperta' : isTest ? 'asset in prova' : 'contro-trend EMA' });
     }
 
     const stats = await getWinRates(assetUp);
     positions.push(pos);
-    await sendTelegram(buildEntryMessage(assetUp, finalDir, entryNum, lv, stats, trendValue));
+    await sendTelegram(strategy === 'RSI2'
+      ? buildRsi2EntryMessage(assetUp, finalDir, entryNum, lv, false)
+      : buildEntryMessage(assetUp, finalDir, entryNum, lv, stats, trendValue));
     res.json({ ok: true });
 
   } catch (e) {
