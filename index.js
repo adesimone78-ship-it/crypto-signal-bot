@@ -656,12 +656,59 @@ async function getPrice(asset) {
 
 
 
-async function sendTelegram(text) {
+// Menu comandi di Telegram (quello che si apre scrivendo "/"), come per Trend Pro BTC.
+const BOT_COMMANDS = [
+  { command: 'aperte', description: 'Posizioni aperte (reali e ombra)' },
+  { command: 'stats', description: 'Statistiche complete e filtro EMA' },
+  { command: 'giorno', description: 'Resoconto di oggi' },
+  { command: 'settimana', description: 'Resoconto settimanale' },
+  { command: 'mese', description: 'Resoconto mensile' },
+  { command: 'anno', description: 'Resoconto annuale' },
+  { command: 'filtrati', description: 'Segnali filtrati e doppioni' },
+  { command: 'filtro', description: 'Stato del filtro EMA' },
+  { command: 'slmin', description: 'SL minimi per asset' },
+  { command: 'prezzi', description: 'Fonti prezzi' },
+  { command: 'help', description: 'Aiuto' }
+];
+
+async function setBotCommands() {
+  try {
+    const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/setMyCommands', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commands: BOT_COMMANDS })
+    });
+    const data = await res.json();
+    console.log('Menu comandi Telegram:', data.ok ? 'impostato' : JSON.stringify(data));
+  } catch (e) {
+    console.error('Errore setMyCommands:', e.message);
+  }
+}
+
+// Chat private: il bot risponde solo agli amministratori del canale dei segnali.
+const adminCache = new Map(); // userId -> { ok, at }
+async function isChannelAdmin(userId) {
+  const cached = adminCache.get(userId);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.ok;
+  let ok = false;
+  try {
+    const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN +
+      '/getChatMember?chat_id=' + encodeURIComponent(CHAT_ID) + '&user_id=' + userId);
+    const data = await res.json();
+    ok = !!(data.ok && data.result && ['creator', 'administrator'].includes(data.result.status));
+  } catch (e) {
+    console.error('Errore getChatMember:', e.message);
+  }
+  adminCache.set(userId, { ok, at: Date.now() });
+  return ok;
+}
+
+async function sendTelegram(text, chatId) {
   try {
     const response = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: CHAT_ID, text: text, parse_mode: 'HTML' })
+      body: JSON.stringify({ chat_id: chatId || CHAT_ID, text: text, parse_mode: 'HTML' })
     });
     const data = await response.json();
     console.log('Telegram:', JSON.stringify(data));
@@ -1078,7 +1125,8 @@ async function pollTelegram() {
   pollingInFlight = true;
   try {
     const res = await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN +
-      '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=25', {
+      '/getUpdates?offset=' + (lastUpdateId + 1) + '&timeout=25' +
+      '&allowed_updates=' + encodeURIComponent(JSON.stringify(['channel_post', 'message'])), {
         signal: AbortSignal.timeout(30000)
       });
 
@@ -1090,12 +1138,30 @@ async function pollTelegram() {
       lastUpdateId = update.update_id;
       if (processedIds.has(update.update_id)) continue;
       processedIds.add(update.update_id);
-      const message = update.channel_post;
+      let message = update.channel_post;
+      let replyChat = null; // null = canale dei segnali
+      if (!message && update.message && update.message.chat && update.message.chat.type === 'private') {
+        // Comando dalla chat privata col bot (dove compare il menu "/")
+        message = update.message;
+        if (!message.text || !message.from) continue;
+        if (!(await isChannelAdmin(message.from.id))) {
+          await sendTelegram('⛔ Bot privato.', message.chat.id);
+          continue;
+        }
+        replyChat = message.chat.id;
+      }
       if (!message || !message.text) continue;
-      const text = message.text.trim().toLowerCase();
+      // "/stats@NomeBot" (scelto dal menu nei gruppi) → "/stats"
+      const text = message.text.trim().toLowerCase().replace(/^(\/[a-z_]+)@\w+/, '$1');
       let reply = null;
 
-      if (text === '/giorno' || text === '/settimana' || text === '/mese' || text === '/anno') {
+      if (text === '/help' || text === '/start') {
+        reply = '🤖 <b>COMANDI</b>\n━━━━━━━━━━━━━━━━━━\n' +
+          BOT_COMMANDS.filter(c => c.command !== 'help')
+            .map(c => '/' + c.command + ' — ' + c.description).join('\n') +
+          '\n━━━━━━━━━━━━━━━━━━\nScrivi / per aprire il menu.';
+
+      } else if (text === '/giorno' || text === '/settimana' || text === '/mese' || text === '/anno') {
         const trades = await dbGetStats();
         const type = text === '/giorno' ? 'day' : text === '/settimana' ? 'week' : text === '/mese' ? 'month' : 'year';
         const label = text === '/giorno' ? 'GIORNALIERO' : text === '/settimana' ? 'SETTIMANALE' : text === '/mese' ? 'MENSILE' : 'ANNUALE';
@@ -1191,7 +1257,7 @@ async function pollTelegram() {
 
       if (reply) {
         console.log('Invio risposta a:', text, 'update_id:', update.update_id);
-        await sendTelegram(reply);
+        await sendTelegram(reply, replyChat);
       }
     }
   } catch (e) {
@@ -1390,6 +1456,7 @@ app.listen(PORT, async () => {
   console.log('Finnhub:', FINNHUB_KEY ? 'configurato' : 'NON configurato');
   await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/deleteWebhook');
   console.log('Webhook rimosso, polling attivo');
+  await setBotCommands();
   setInterval(checkPositions, 3 * 60 * 1000);
   setInterval(pollTelegram, 3000);
   setInterval(checkScheduledReports, 60 * 1000);
