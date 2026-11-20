@@ -1152,14 +1152,17 @@ async function pollTelegram() {
       }
       if (!message || !message.text) continue;
       // "/stats@NomeBot" (scelto dal menu nei gruppi) → "/stats"
-      const text = message.text.trim().toLowerCase().replace(/^(\/[a-z_]+)@\w+/, '$1');
+      let text = message.text.trim().toLowerCase().replace(/^(\/[a-z_]+)@\w+/, '$1');
+      // Solo la prima parola del comando ("/aperte ora" → "/aperte"), tranne "/chiudi tutto"
+      if (text.startsWith('/') && text !== '/chiudi tutto') text = text.split(/\s+/)[0];
       let reply = null;
+      const helpText = '🤖 <b>COMANDI</b>\n━━━━━━━━━━━━━━━━━━\n' +
+        BOT_COMMANDS.filter(c => c.command !== 'help')
+          .map(c => '/' + c.command + ' — ' + c.description).join('\n') +
+        '\n━━━━━━━━━━━━━━━━━━\nTocca il pulsante Menu o scrivi / per aprire il menu.';
 
       if (text === '/help' || text === '/start') {
-        reply = '🤖 <b>COMANDI</b>\n━━━━━━━━━━━━━━━━━━\n' +
-          BOT_COMMANDS.filter(c => c.command !== 'help')
-            .map(c => '/' + c.command + ' — ' + c.description).join('\n') +
-          '\n━━━━━━━━━━━━━━━━━━\nScrivi / per aprire il menu.';
+        reply = helpText;
 
       } else if (text === '/giorno' || text === '/settimana' || text === '/mese' || text === '/anno') {
         const trades = await dbGetStats();
@@ -1253,6 +1256,10 @@ async function pollTelegram() {
       } else if (text === '/stats') {
         const trades = await dbGetStats();
         reply = await buildStatsMessage(trades);
+
+      } else if (text.startsWith('/')) {
+        // Comando non riconosciuto → elenco comandi
+        reply = helpText;
       }
 
       if (reply) {
