@@ -79,7 +79,18 @@ function getMarginOrder(asset, entry) {
     const margin = +(order * f.marginPct).toFixed(2);
     return { margin, order };
   }
-  return marginMap[asset] || { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
+  if (marginMap[asset]) return marginMap[asset];
+  if (isStockAsset(asset)) {
+    return { margin: +(STV_ORDER_DEFAULT * STV_MARGIN_PCT).toFixed(2), order: STV_ORDER_DEFAULT };
+  }
+  return { margin: MARGIN_DEFAULT, order: ORDER_DEFAULT };
+}
+
+// Azioni su borse note (per prezzi Yahoo e size di default)
+const STOCK_EXCHANGES = { NASDAQ: '', NYSE: '', AMEX: '', BATS: '', MIL: '.MI', EURONEXT: '.AS', XETR: '.DE' };
+function isStockAsset(asset) {
+  const i = asset.indexOf(':');
+  return i > 0 && Object.prototype.hasOwnProperty.call(STOCK_EXCHANGES, asset.slice(0, i));
 }
 
 const atrMap = {
@@ -170,6 +181,30 @@ const FUTURES_SL_CONFIRM_ASSETS = new Set([
 // i dati reali non confermano il backtest.
 const RSI2_EMERGENCY_SL = 0.08;
 const RSI2_SHADOW_ONLY = true;
+
+// Strategia STV (Supertrend V, solo long, 4h) su un paniere di azioni, dal
+// 24/11/2026: entra su "Buy" e esce sul "Sell" successivo (segnale "EXIT" da
+// TradingView). Nessun TP, niente timeout 7 giorni, stop di emergenza −10%.
+// In prova (solo ombra) finché i dati reali non confermano il backtest.
+const STV_EMERGENCY_SL = 0.10;
+const STV_SHADOW_ONLY = true;
+const STV_ORDER_DEFAULT = 5000;    // € di controvalore per le azioni
+const STV_MARGIN_PCT = 0.20;       // margine 20% (leva 5) sulle azioni CFD
+
+// Strategie che escono su segnale (non su TP/timeout)
+const SIGNAL_EXIT_STRATEGIES = {
+  RSI2: { sl: RSI2_EMERGENCY_SL, shadowOnly: RSI2_SHADOW_ONLY, exitReason: 'chiusura sopra la media a 5 giorni.' },
+  STV:  { sl: STV_EMERGENCY_SL,  shadowOnly: STV_SHADOW_ONLY,  exitReason: 'segnale Sell di Supertrend V.' }
+};
+const KNOWN_STRATEGIES = new Set(['TEMA', 'RSI2', 'STV']);
+
+function buildStvEntryMessage(asset, direction, entry, lv, isTest) {
+  const fmt = (n) => fmtAsset(n, asset);
+  return (isTest ? '🧪 ' : '') + '🔔 <b>SUPERTREND V — ENTRATA ' + direction + ' ' + asset.split(':').pop() + '</b>\n' +
+    'Entry ' + fmt(entry) + ' | stop emergenza ' + fmt(lv.sl) + ' (−' + (STV_EMERGENCY_SL * 100) + '%)\n' +
+    'Uscita: su segnale, al prossimo Sell (grafico 4h).\n' +
+    (isTest ? 'Strategia in prova: tracciata in ombra, nessun trade reale.' : 'Size: €' + lv.order.toFixed(2) + ' (margine €' + lv.margin.toFixed(2) + ')');
+}
 
 function buildRsi2EntryMessage(asset, direction, entry, lv, isTest) {
   const fmt = (n) => fmtAsset(n, asset);
@@ -510,7 +545,14 @@ const YAHOO_MAP = {
   'NASDAQ:NVDA': 'NVDA', NVDA: 'NVDA',
   'CMCMARKETS:PLATINUM': 'PL=F'
 };
-function getYahooSymbol(asset) { return YAHOO_MAP[asset] || null; }
+function getYahooSymbol(asset) {
+  if (YAHOO_MAP[asset]) return YAHOO_MAP[asset];
+  if (isStockAsset(asset)) {
+    const [ex, tk] = asset.split(':');
+    return tk.replace(/\./g, '-') + STOCK_EXCHANGES[ex];
+  }
+  return null;
+}
 
 // Prezzo Yahoo "fresco" con fino a 3 tentativi su due host. All'ora tonda
 // arrivano più alert insieme e Yahoo risponde spesso "Too Many Requests":
@@ -628,9 +670,9 @@ async function getPrice(asset) {
 
     // Yahoo Finance — prezzo reale di mercato: commodity, indici, futures, azioni.
     // Controllato PRIMA del proxy ETF: è la fonte più accurata quando disponibile.
-    const yahooMap = YAHOO_MAP;
-    if (yahooMap[asset]) {
-      const symbol = yahooMap[asset];
+    const yahooSym = getYahooSymbol(asset);
+    if (yahooSym) {
+      const symbol = yahooSym;
       const cached = priceCache[symbol];
       if (cached && (Date.now() - cached.at) < 170000) {
         return cached.price;
@@ -966,7 +1008,7 @@ async function buildStatsMessage(trades) {
   } else {
     const byA = {};
     for (const t of testShadow) {
-      const k = t.asset.split(':').pop() + (t.strategy === 'RSI2' ? ' RSI2' : '');
+      const k = t.asset.split(':').pop() + (t.strategy && t.strategy !== 'TEMA' ? ' ' + t.strategy : '');
       if (!byA[k]) byA[k] = [];
       byA[k].push(t);
     }
@@ -1071,7 +1113,7 @@ function evaluatePosition(pos, price) {
   const { order } = getMarginOrder(pos.asset, pos.entry);
 
   // Timeout 7 giorni
-  if (result === null && ageHours >= 168 && pos.strategy !== 'RSI2') {
+  if (result === null && ageHours >= 168 && !SIGNAL_EXIT_STRATEGIES[pos.strategy]) {
     const priceDiff = pos.direction === 'LONG' ? price - pos.entry : pos.entry - price;
     const pnlEur = +(priceDiff / pos.entry * order).toFixed(2);
     return { result: pnlEur >= 0 ? 'WIN' : 'LOSS', closePrice: price, pnlEur, timeout: true };
@@ -1369,7 +1411,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(400).json({ error: 'Parametri mancanti' });
     }
 
-    let assetUp = asset.toUpperCase();
+    let assetUp = asset.toUpperCase().replace(/_DLY$/, '');
     if (assetUp === 'US500') assetUp = 'PEPPERSTONE:US500';
     if (assetUp === 'US100') assetUp = 'FOREXCOM:NAS100';
 
@@ -1378,11 +1420,14 @@ app.post('/webhook', async (req, res) => {
     const trendRaw = (trend !== undefined && trend !== null) ? parseFloat(trend) : null;
 
     // === Strategia RSI2 (Connors): uscita su segnale ===
-    if (strategy === 'RSI2' && dir === 'EXIT') {
+    const sxs = SIGNAL_EXIT_STRATEGIES[strategy];
+    const stratLabel = strategy === 'STV' ? 'SUPERTREND V' : strategy;
+    if (sxs && dir === 'EXIT') {
       const toClose = positions.concat(shadowPositions)
-        .filter(p => p.asset === assetUp && p.strategy === 'RSI2');
-      logSignal({ asset: assetUp, raw_direction: 'EXIT RSI2', entry: entryNum, trend_raw: trendRaw,
-        outcome: toClose.length ? 'exit_rsi2' : 'exit_rsi2_nessuna_posizione' });
+        .filter(p => p.asset === assetUp && p.strategy === strategy);
+      const sl_ = strategy.toLowerCase();
+      logSignal({ asset: assetUp, raw_direction: 'EXIT ' + strategy, entry: entryNum, trend_raw: trendRaw,
+        outcome: toClose.length ? 'exit_' + sl_ : 'exit_' + sl_ + '_nessuna_posizione' });
       for (const pos of toClose) {
         const { order } = getMarginOrder(pos.asset, pos.entry);
         const diff = pos.direction === 'LONG' ? entryNum - pos.entry : pos.entry - entryNum;
@@ -1393,12 +1438,17 @@ app.post('/webhook', async (req, res) => {
         const si = shadowPositions.indexOf(pos); if (si >= 0) shadowPositions.splice(si, 1);
         const ore = Math.round((Date.now() - new Date(pos.openedAt)) / 3600000);
         const pct = (diff / pos.entry * 100).toFixed(2);
-        await sendTelegram((pos.shadowType ? '🧪 ' : '') + '🔔 <b>RSI2 — USCITA ' + assetUp.split(':').pop() + '</b>\n' +
+        await sendTelegram((pos.shadowType ? '🧪 ' : '') + '🔔 <b>' + stratLabel + ' — USCITA ' + assetUp.split(':').pop() + '</b>\n' +
           'Ingresso ' + fmtAsset(pos.entry, assetUp) + ' → uscita ' + fmtAsset(entryNum, assetUp) + ' (' + (diff >= 0 ? '+' : '') + pct + '%)\n' +
           (result === 'WIN' ? '✅' : '❌') + ' P&L' + (pos.shadowType ? ' simulato' : '') + ': <b>' + (pnlEur >= 0 ? '+€' : '-€') + Math.abs(pnlEur).toFixed(2) + '</b> | durata ' + ore + 'h\n' +
-          'Motivo: chiusura sopra la media a 5 giorni.');
+          'Motivo: ' + sxs.exitReason);
       }
       return res.json({ ok: true, exit: true, closed: toClose.length });
+    }
+
+    if (dir === 'EXIT') {
+      logSignal({ asset: assetUp, raw_direction: 'EXIT ' + strategy, entry: entryNum, outcome: 'rejected_exit_strategia_sconosciuta' });
+      return res.status(400).json({ error: 'EXIT non gestito per la strategia ' + strategy });
     }
 
     // Doppione solo se c'è già una posizione REALE sull'asset (della stessa
@@ -1427,9 +1477,9 @@ app.post('/webhook', async (req, res) => {
       isShadow: shadowPositions.includes(conflictingPos)
     } : null;
 
-    const lv = strategy === 'RSI2'
+    const lv = sxs
       ? calcLevels(entryNum, dir, assetUp,
-          dir === 'LONG' ? entryNum * (1 - RSI2_EMERGENCY_SL) : entryNum * (1 + RSI2_EMERGENCY_SL),
+          dir === 'LONG' ? entryNum * (1 - sxs.sl) : entryNum * (1 + sxs.sl),
           dir === 'LONG' ? entryNum * 10 : entryNum / 10)
       : calcLevels(entryNum, dir, assetUp, sl, tp);
     const finalDir = lv.correctedDirection;
@@ -1450,7 +1500,7 @@ app.post('/webhook', async (req, res) => {
     const trendValue = trendRaw;
     let isFiltered = false;
 
-    if (strategy !== 'RSI2' && TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue !== 0) {
+    if (!sxs && TREND_FILTER_ENABLED && trendValue !== null && !isNaN(trendValue) && trendValue !== 0) {
       const trendRialzista = trendValue > 0;
       const controTrend = (finalDir === 'LONG' && !trendRialzista) ||
                           (finalDir === 'SHORT' && trendRialzista);
@@ -1464,7 +1514,7 @@ app.post('/webhook', async (req, res) => {
     if (isDuplicate) isFiltered = true;  // doppione → sempre ombra
 
     // Asset in prova: il segnale sarebbe un trade reale → ombra 'test'
-    const isTest = !isFiltered && (SHADOW_ONLY_ASSETS.has(assetUp) || RSI2_SHADOW_ONLY && strategy === 'RSI2');
+    const isTest = !isFiltered && (SHADOW_ONLY_ASSETS.has(assetUp) || !!(sxs && sxs.shadowOnly));
     if (isTest) {
       isFiltered = true;
       console.log('Asset in prova (solo ombra):', assetUp, finalDir);
@@ -1517,7 +1567,7 @@ app.post('/webhook', async (req, res) => {
       sl: lv.sl, tp: lv.tp, openedAt: new Date(), trend: trendValue,
       proxyRatio: proxyRatio, basisRatio: basisRatio,
       shadowType: isDuplicate ? 'duplicate' : isTest ? 'test' : (isFiltered ? 'ema' : null),
-      strategy: strategy === 'RSI2' ? 'RSI2' : 'TEMA'
+      strategy: KNOWN_STRATEGIES.has(strategy) ? strategy : 'TEMA'
     };
 
     const dbId = await dbInsertTrade(pos, lv, isFiltered);
@@ -1533,7 +1583,9 @@ app.post('/webhook', async (req, res) => {
 
     if (isFiltered) {
       shadowPositions.push(pos);
-      await sendTelegram(strategy === 'RSI2'
+      await sendTelegram(strategy === 'STV'
+        ? buildStvEntryMessage(assetUp, finalDir, entryNum, lv, isTest)
+        : strategy === 'RSI2'
         ? buildRsi2EntryMessage(assetUp, finalDir, entryNum, lv, isTest)
         : buildShadowMessage(assetUp, finalDir, entryNum, lv, trendValue, conflictInfo, isTest));
       return res.json({ ok: true, skipped: true, shadow: true,
@@ -1542,7 +1594,9 @@ app.post('/webhook', async (req, res) => {
 
     const stats = await getWinRates(assetUp);
     positions.push(pos);
-    await sendTelegram(strategy === 'RSI2'
+    await sendTelegram(strategy === 'STV'
+      ? buildStvEntryMessage(assetUp, finalDir, entryNum, lv, false)
+      : strategy === 'RSI2'
       ? buildRsi2EntryMessage(assetUp, finalDir, entryNum, lv, false)
       : buildEntryMessage(assetUp, finalDir, entryNum, lv, stats, trendValue));
     res.json({ ok: true });
