@@ -201,9 +201,22 @@ const STV_MARGIN_PCT = 0.20;       // margine 20% (leva 5) sulle azioni CFD
 // Strategie che escono su segnale (non su TP/timeout)
 const SIGNAL_EXIT_STRATEGIES = {
   RSI2: { sl: RSI2_EMERGENCY_SL, shadowOnly: RSI2_SHADOW_ONLY, exitReason: 'chiusura sopra la media a 5 giorni.' },
-  STV:  { sl: STV_EMERGENCY_SL,  shadowOnly: STV_SHADOW_ONLY,  exitReason: 'segnale Sell di Supertrend V.' }
+  STV:  { sl: STV_EMERGENCY_SL,  shadowOnly: STV_SHADOW_ONLY,  exitReason: 'segnale Sell di Supertrend V.' },
+  TREND: { sl: 0.10, shadowOnly: true, exitReason: 'chiusura giornaliera più del 3% sotto la media a 200 giorni.' }
 };
-const KNOWN_STRATEGIES = new Set(['TEMA', 'RSI2', 'STV']);
+const KNOWN_STRATEGIES = new Set(['TEMA', 'RSI2', 'STV', 'TREND']);
+const STRATEGY_LABELS = { STV: 'SUPERTREND V', RSI2: 'RSI2', TREND: 'TREND EMA200' };
+
+// Strategia TREND (dal 26/11/2026, solo AMZN, grafico giornaliero): compra
+// quando la chiusura è sopra la EMA200, esce quando chiude più del 3% sotto.
+// Backtest AMZN dal 2010: PF 6,33 (4,68 con stop −10%), 16,5%/anno, DD −19%.
+function buildTrendEntryMessage(asset, direction, entry, lv, isTest) {
+  const fmt = (n) => fmtAsset(n, asset);
+  return (isTest ? '🧪 ' : '') + '🔔 <b>TREND EMA200 — ENTRATA ' + direction + ' ' + asset.split(':').pop() + '</b>\n' +
+    'Entry ' + fmt(entry) + ' | stop emergenza ' + fmt(lv.sl) + ' (−10%)\n' +
+    'Uscita: su segnale, chiusura giornaliera più del 3% sotto la media a 200 giorni.\n' +
+    (isTest ? 'Strategia in prova: tracciata in ombra, nessun trade reale.' : 'Size: €' + lv.order.toFixed(2) + ' (margine €' + lv.margin.toFixed(2) + ')');
+}
 
 // Voto dei titoli STV dal backtest del 26/11/2026 (4h, solo long, orario
 // regolare, costi 0,15%, stop −10%): [PF tutto il periodo, PF ultimo 30%,
@@ -1268,7 +1281,7 @@ async function checkPositions() {
       // notificata anche la chiusura (stop, TP o timeout), altrimenti su
       // Telegram restano "aperte" senza spiegazione (NVDA STV, 25/11).
       if (pos.shadowType === 'test') {
-        const lbl = pos.strategy === 'STV' ? 'SUPERTREND V' : pos.strategy === 'RSI2' ? 'RSI2' : 'PROVA';
+        const lbl = STRATEGY_LABELS[pos.strategy] || 'PROVA';
         const motivo = out.timeout ? 'timeout 7 giorni'
           : out.result === 'LOSS' ? (SIGNAL_EXIT_STRATEGIES[pos.strategy] ? 'stop di emergenza' : 'stop loss')
           : 'take profit';
@@ -1521,11 +1534,11 @@ app.post('/webhook', async (req, res) => {
 
     // === Strategia RSI2 (Connors): uscita su segnale ===
     const sxs = SIGNAL_EXIT_STRATEGIES[strategy];
-    const stratLabel = strategy === 'STV' ? 'SUPERTREND V' : strategy;
+    const stratLabel = STRATEGY_LABELS[strategy] || strategy;
     if (sxs && dir === 'EXIT') {
       const toClose = positions.concat(shadowPositions)
         .filter(p => p.strategy === strategy &&
-          (p.asset === assetUp || (strategy === 'STV' && stockKey(p.asset) === stockKey(assetUp))));
+          (p.asset === assetUp || (isStockAsset(assetUp) && stockKey(p.asset) === stockKey(assetUp))));
       const sl_ = strategy.toLowerCase();
       logSignal({ asset: assetUp, raw_direction: 'EXIT ' + strategy, entry: entryNum, trend_raw: trendRaw,
         outcome: toClose.length ? 'exit_' + sl_ : 'exit_' + sl_ + '_nessuna_posizione' });
@@ -1684,7 +1697,9 @@ app.post('/webhook', async (req, res) => {
 
     if (isFiltered) {
       shadowPositions.push(pos);
-      await sendTelegram(strategy === 'STV'
+      await sendTelegram(strategy === 'TREND'
+        ? buildTrendEntryMessage(assetUp, finalDir, entryNum, lv, isTest)
+        : strategy === 'STV'
         ? buildStvEntryMessage(assetUp, finalDir, entryNum, lv, isTest)
         : strategy === 'RSI2'
         ? buildRsi2EntryMessage(assetUp, finalDir, entryNum, lv, isTest)
@@ -1695,7 +1710,9 @@ app.post('/webhook', async (req, res) => {
 
     const stats = await getWinRates(assetUp);
     positions.push(pos);
-    await sendTelegram(strategy === 'STV'
+    await sendTelegram(strategy === 'TREND'
+      ? buildTrendEntryMessage(assetUp, finalDir, entryNum, lv, false)
+      : strategy === 'STV'
       ? buildStvEntryMessage(assetUp, finalDir, entryNum, lv, false)
       : strategy === 'RSI2'
       ? buildRsi2EntryMessage(assetUp, finalDir, entryNum, lv, false)
