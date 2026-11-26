@@ -205,10 +205,88 @@ const SIGNAL_EXIT_STRATEGIES = {
 };
 const KNOWN_STRATEGIES = new Set(['TEMA', 'RSI2', 'STV']);
 
+// Voto dei titoli STV dal backtest del 26/11/2026 (4h, solo long, orario
+// regolare, costi 0,15%, stop −10%): [PF tutto il periodo, PF ultimo 30%,
+// speculativo]. Il voto usa il PF più basso dei due (premia la costanza):
+// ≥1,8 ★★★★★ | ≥1,65 ★★★★ | ≥1,5 ★★★ | ≥1,3 ★★ | sotto ★.
+// I titoli speculativi (risultati gonfiati da pochi movimenti enormi) hanno
+// al massimo 3 stelle.
+const STV_RATING = {
+  FUTU: [2.36, 1.35],
+  FRO: [1.28, 1.54],
+  MU: [1.51, 2.42],
+  NFLX: [1.51, 1.98],
+  HD: [1.43, 1.52],
+  BTI: [1.31, 1.73],
+  MNST: [1.54, 1.49],
+  CCL: [1.48, 1.57],
+  GME: [2.41, 2.24, 1],
+  BABA: [1.46, 1.57],
+  COIN: [1.57, 1.35],
+  TSLA: [2.31, 1.31],
+  TSM: [1.71, 1.79],
+  AMD: [1.85, 2.45],
+  BAC: [1.48, 2.25],
+  PANW: [2.02, 1.79],
+  ACN: [1.67, 1.45],
+  NVDA: [2.35, 1.48],
+  STMMI: [1.51, 2.04],
+  PLTR: [2.52, 1.86],
+  TEN: [1.34, 2.12],
+  AAPL: [2.44, 1.64],
+  META: [1.32, 1.76],
+  GOOGL: [1.69, 1.81],
+  MSFT: [1.32, 1.51],
+  LLY: [1.67, 1.93],
+  INTC: [1.53, 2.33],
+  ABBV: [1.69, 1.49],
+  DAN: [1.42, 1.48],
+  CMB: [1.67, 2.32],
+  MB: [1.95, 3.22],
+  TIT: [1.74, 3.28],
+  ENI: [1.45, 2.95],
+  ENAV: [1.30, 2.28],
+  UCG: [1.76, 1.76],
+  CE: [1.64, 1.42],
+  BAMI: [1.67, 1.43],
+  WBD: [1.33, 1.08],
+  PST: [1.27, 1.99],
+  NVAX: [1.62, 2.16, 1],
+  RGTI: [2.58, 1.73, 1],
+  RACE: [1.81, 1.27],
+  CRM: [1.51, 1.91],
+  HOOD: [2.06, 3.43, 1],
+  SMR: [1.54, 1.79, 1],
+  MSTR: [2.38, 3.02, 1],
+  UNI: [1.78, 1.55],
+  EQUI: [1.52, 1.97],
+  RCS: [1.49, 1.23],
+  GS: [1.49, 1.33],
+  MRVL: [1.41, 1.79],
+  CAT: [1.80, 2.73],
+  LRCX: [1.54, 1.65],
+  JPM: [1.70, 2.76],
+  SCHW: [1.58, 1.20],
+  AMGN: [1.53, 1.57],
+  SPM: [1.87, 1.78],
+  G: [1.54, 2.90]
+};
+function stvRatingLine(asset) {
+  const r = STV_RATING[asset.split(':').pop()];
+  if (!r) return 'Voto: n.d. (titolo non testato)';
+  const m = Math.min(r[0], r[1]);
+  let st = m >= 1.8 ? 5 : m >= 1.65 ? 4 : m >= 1.5 ? 3 : m >= 1.3 ? 2 : 1;
+  if (r[2]) st = Math.min(st, 3);
+  const f = (x) => x.toFixed(2).replace('.', ',');
+  return 'Voto: ' + '★'.repeat(st) + '☆'.repeat(5 - st) + ' (PF ' + f(r[0]) + ' | recente ' + f(r[1]) + ')' +
+    (r[2] ? ' ⚠️ speculativo' : '');
+}
+
 function buildStvEntryMessage(asset, direction, entry, lv, isTest) {
   const fmt = (n) => fmtAsset(n, asset);
   return (isTest ? '🧪 ' : '') + '🔔 <b>SUPERTREND V — ENTRATA ' + direction + ' ' + asset.split(':').pop() + '</b>\n' +
     'Entry ' + fmt(entry) + ' | stop emergenza ' + fmt(lv.sl) + ' (−' + (STV_EMERGENCY_SL * 100) + '%)\n' +
+    stvRatingLine(asset) + '\n' +
     'Uscita: su segnale, al prossimo Sell (grafico 4h).\n' +
     (isTest ? 'Strategia in prova: tracciata in ombra, nessun trade reale.' : 'Size: €' + lv.order.toFixed(2) + ' (margine €' + lv.margin.toFixed(2) + ')');
 }
