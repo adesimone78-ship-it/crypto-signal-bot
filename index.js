@@ -833,13 +833,14 @@ async function getPrice(asset) {
 
 // Menu comandi di Telegram (quello che si apre scrivendo "/"), come per Trend Pro BTC.
 const BOT_COMMANDS = [
-  { command: 'aperte', description: 'Posizioni aperte (reali e ombra)' },
+  { command: 'aperte', description: 'Posizioni aperte (reali, filtrate, in prova)' },
+  { command: 'prova', description: 'Strategie in prova: aperte e risultati' },
   { command: 'stats', description: 'Statistiche complete e filtro EMA' },
   { command: 'giorno', description: 'Resoconto di oggi' },
   { command: 'settimana', description: 'Resoconto settimanale' },
   { command: 'mese', description: 'Resoconto mensile' },
   { command: 'anno', description: 'Resoconto annuale' },
-  { command: 'filtrati', description: 'Segnali filtrati e doppioni' },
+  { command: 'filtrati', description: 'Segnali filtrati dal trend EMA e doppioni' },
   { command: 'filtro', description: 'Stato del filtro EMA' },
   { command: 'slmin', description: 'SL minimi per asset' },
   { command: 'prezzi', description: 'Fonti prezzi' },
@@ -1022,7 +1023,7 @@ async function buildStatsMessage(trades) {
   const testShadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type === 'test');
   const dupShadow = trades.filter(t => t.result !== null && t.filtered === true && t.shadow_type === 'duplicate');
 
-  if (real.length === 0 && shadow.length === 0 && dupShadow.length === 0) {
+  if (real.length === 0 && shadow.length === 0 && dupShadow.length === 0 && testShadow.length === 0) {
     return '📊 <b>STATISTICHE</b>\n━━━━━━━━━━━━━━━━━━\nNessun trade chiuso nel database.';
   }
 
@@ -1098,23 +1099,25 @@ async function buildStatsMessage(trades) {
     msg += '💶 P&L simulato: <b>' + (d.pnl >= 0 ? '+' : '') + '€' + d.pnl.toFixed(2) + '</b>\n';
   }
 
-  // === ASSET IN PROVA (solo ombra) ===
+  // === STRATEGIE E ASSET IN PROVA (separati dai filtrati) ===
   msg += '━━━━━━━━━━━━━━━━━━\n';
-  msg += '🧪 <b>ASSET IN PROVA (solo ombra)</b>\n';
+  msg += '🧪 <b>IN PROVA (simulati, fuori dal confronto del filtro)</b>\n';
   if (testShadow.length === 0) {
     msg += 'Nessun trade di prova ancora concluso.\n';
   } else {
-    const byA = {};
-    for (const t of testShadow) {
-      const k = t.asset.split(':').pop() + (t.strategy && t.strategy !== 'TEMA' ? ' ' + t.strategy : '');
-      if (!byA[k]) byA[k] = [];
-      byA[k].push(t);
-    }
-    for (const [k, arr] of Object.entries(byA)) {
+    for (const [lbl, arr] of Object.entries(groupByTestStrategy(testShadow))) {
       const b = statBlock(arr);
-      msg += '• <b>' + k + '</b>: ' + b.count + ' trade | ' + b.rate + '% | ' + (b.pnl >= 0 ? '+' : '') + '€' + b.pnl.toFixed(2) + '\n';
+      const eur = (x) => (x >= 0 ? '+€' : '-€') + Math.abs(x).toFixed(2);
+      msg += '<b>' + lbl + '</b>: ' + b.count + ' trade | ' + b.rate + '% | ' + eur(b.pnl) + '\n';
+      const byA = {};
+      for (const t of arr) (byA[t.asset.split(':').pop()] = byA[t.asset.split(':').pop()] || []).push(t);
+      for (const [k, a2] of Object.entries(byA)) {
+        const b2 = statBlock(a2);
+        msg += '  • ' + k + ': ' + b2.count + ' | ' + b2.rate + '% | ' + eur(b2.pnl) + '\n';
+      }
     }
   }
+  msg += 'Dettagli e posizioni aperte: /prova\n';
 
   msg += '━━━━━━━━━━━━━━━━━━';
   return msg;
@@ -1145,21 +1148,85 @@ function buildOpenPositions() {
     });
   }
 
-  if (shadowPositions.length > 0) {
+  // Filtrate dal trend EMA e doppioni (segnali della strategia principale)
+  const filt = shadowPositions.filter(p => p.shadowType !== 'test');
+  if (filt.length > 0) {
     msg += '━━━━━━━━━━━━━━━━━━\n';
-    msg += '🚫 <b>OMBRA — filtrate (' + shadowPositions.length + ')</b>\n';
-    shadowPositions.forEach((pos) => {
-      const fmt = (n) => fmtAsset(n, pos.asset);
-      const duration = Math.round((new Date() - new Date(pos.openedAt)) / 60000);
-      const hours = Math.floor(duration / 60);
-      const mins = duration % 60;
-      const durStr = hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
+    msg += '🚫 <b>FILTRATE DAL TREND EMA / DOPPIONI (' + filt.length + ')</b>\n';
+    filt.forEach((pos) => {
       msg += '• ' + pos.asset.split(':').pop() + ' ' + pos.direction +
-        ' @ $' + fmt(pos.entry) + ' — ' + durStr +
-        (pos.shadowType === 'duplicate' ? ' (doppione)' : pos.shadowType === 'test' ? ' (prova)' : '') + '\n';
+        ' @ $' + fmtAsset(pos.entry, pos.asset) + ' — ' + durText(pos.openedAt) +
+        (pos.shadowType === 'duplicate' ? ' (doppione)' : '') + '\n';
     });
   }
 
+  // Strategie e asset in prova: sezione separata
+  const tp = shadowPositions.filter(p => p.shadowType === 'test');
+  if (tp.length > 0) {
+    msg += '━━━━━━━━━━━━━━━━━━\n';
+    msg += '🧪 <b>IN PROVA (' + tp.length + ')</b> — dettagli con /prova\n';
+    for (const [lbl, arr] of Object.entries(groupByTestStrategy(tp))) {
+      msg += '<b>' + lbl + '</b> (' + arr.length + '): ' +
+        arr.map(p => p.asset.split(':').pop()).join(', ') + '\n';
+    }
+  }
+
+  msg += '━━━━━━━━━━━━━━━━━━';
+  return msg;
+}
+
+function durText(openedAt) {
+  const duration = Math.round((new Date() - new Date(openedAt)) / 60000);
+  const days = Math.floor(duration / 1440);
+  const hours = Math.floor((duration % 1440) / 60);
+  const mins = duration % 60;
+  if (days > 0) return days + 'g ' + hours + 'h';
+  return hours > 0 ? hours + 'h ' + mins + 'min' : mins + 'min';
+}
+
+// Raggruppa posizioni/trade "in prova" per strategia
+function testStrategyLabel(strategy) {
+  return strategy && strategy !== 'TEMA' ? (STRATEGY_LABELS[strategy] || strategy) : 'TEMA (asset in prova)';
+}
+function groupByTestStrategy(list) {
+  const g = {};
+  for (const p of list) {
+    const k = testStrategyLabel(p.strategy);
+    (g[k] = g[k] || []).push(p);
+  }
+  return g;
+}
+
+// /prova — strategie in prova: posizioni aperte e risultati dei trade chiusi
+function buildTestMessage(trades) {
+  const eur = (x) => (x >= 0 ? '+€' : '-€') + Math.abs(x).toFixed(2);
+  let msg = '🧪 <b>STRATEGIE IN PROVA</b>\n';
+  msg += 'Trade simulati: nessun trade reale.\n';
+  const open = shadowPositions.filter(p => p.shadowType === 'test');
+  const closed = (Array.isArray(trades) ? trades : [])
+    .filter(t => t.filtered === true && t.shadow_type === 'test' && t.result !== null);
+  const gOpen = groupByTestStrategy(open);
+  const gClosed = groupByTestStrategy(closed);
+  const labels = [...new Set(Object.keys(gOpen).concat(Object.keys(gClosed)))];
+  if (labels.length === 0) return msg + 'Nessuna posizione in prova.';
+  for (const lbl of labels) {
+    const o = gOpen[lbl] || [], c = gClosed[lbl] || [];
+    msg += '━━━━━━━━━━━━━━━━━━\n<b>' + lbl + '</b>\n';
+    if (c.length > 0) {
+      const b = statBlock(c);
+      msg += 'Chiusi: ' + b.count + ' | ✅ ' + b.wins + ' ❌ ' + b.losses + ' | ' + b.rate + '% | ' + eur(b.pnl) + '\n';
+    } else {
+      msg += 'Nessun trade chiuso.\n';
+    }
+    if (o.length > 0) {
+      msg += 'Aperte (' + o.length + '):\n';
+      o.forEach(p => {
+        const tk = p.asset.split(':').pop();
+        const r = p.strategy === 'STV' && STV_RATING[tk] ? ' ' + stvRatingLine(p.asset).replace(/^Voto: /, '').split(' (')[0] : '';
+        msg += '• ' + tk + ' ' + p.direction + ' @ ' + fmtAsset(p.entry, p.asset) + ' — ' + durText(p.openedAt) + r + '\n';
+      });
+    }
+  }
   msg += '━━━━━━━━━━━━━━━━━━';
   return msg;
 }
@@ -1427,14 +1494,15 @@ async function pollTelegram() {
           'Stato: <b>' + (TREND_FILTER_ENABLED ? 'ATTIVO ✅' : 'DISATTIVO ❌') + '</b>\n' +
           'Regola: LONG solo se EMA150 > EMA250\n' +
           '        SHORT solo se EMA150 < EMA250\n' +
-          'Ombra aperte ora: ' + shadowPositions.length + '\n' +
+          'Filtrate aperte ora: ' + shadowPositions.filter(p => p.shadowType !== 'test').length + '\n' +
           '━━━━━━━━━━━━━━━━━━\n' +
           'I segnali filtrati vengono tracciati in silenzio.\n' +
           'Usa /stats per il confronto con e senza filtro.';
 
       } else if (text === '/filtrati') {
         const trades = await dbGetStats();
-        const shadow = Array.isArray(trades) ? trades.filter(t => t.filtered === true) : [];
+        // Solo filtrati dal trend EMA e doppioni: le strategie in prova sono in /prova
+        const shadow = Array.isArray(trades) ? trades.filter(t => t.filtered === true && t.shadow_type !== 'test') : [];
         const chiusi = shadow.filter(t => t.result !== null);
         if (shadow.length === 0) {
           reply = '🚫 <b>SEGNALI FILTRATI</b>\n━━━━━━━━━━━━━━━━━━\nNessun segnale filtrato finora.';
@@ -1448,7 +1516,7 @@ async function pollTelegram() {
               ? ' (' + (parseFloat(t.pnl_eur) >= 0 ? '+' : '') + '€' + parseFloat(t.pnl_eur).toFixed(2) + ')'
               : '';
             const ora = new Date(t.opened_at).toLocaleString('it-IT', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
-            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + (t.shadow_type === 'duplicate' ? ' ⏸' : t.shadow_type === 'test' ? ' 🧪' : '') + '\n';
+            msg += '• ' + t.asset.split(':').pop() + ' ' + t.direction + ' — ' + esito + pnl + ' — ' + ora + (t.shadow_type === 'duplicate' ? ' ⏸' : '') + '\n';
           });
           if (shadow.length > 12) msg += '... e altri ' + (shadow.length - 12) + '\n';
           msg += '━━━━━━━━━━━━━━━━━━\nUsa /stats per il verdetto sul filtro.';
@@ -1467,6 +1535,9 @@ async function pollTelegram() {
           'lastReportDay: ' + lastReportDay + '\n' +
           'Posizioni reali: ' + positions.length + ' | Ombra: ' + shadowPositions.length + '\n' +
           '━━━━━━━━━━━━━━━━━━';
+
+      } else if (text === '/prova') {
+        reply = buildTestMessage(await dbGetStats());
 
       } else if (text === '/stats') {
         const trades = await dbGetStats();
