@@ -87,7 +87,14 @@ function getMarginOrder(asset, entry) {
 }
 
 // Azioni su borse note (per prezzi Yahoo e size di default)
-const STOCK_EXCHANGES = { NASDAQ: '', NYSE: '', AMEX: '', BATS: '', MIL: '.MI', EURONEXT: '.AS', XETR: '.DE' };
+// BATS = dati Cboe (TradingView li usa per le azioni USA senza abbonamento
+// ai feed NYSE/NASDAQ); MIL_LS = Borsa di Milano nei simboli degli alert.
+const STOCK_EXCHANGES = { NASDAQ: '', NYSE: '', AMEX: '', BATS: '', MIL: '.MI', MIL_LS: '.MI', EURONEXT: '.AS', XETR: '.DE' };
+// Chiave per confrontare lo stesso titolo con prefissi diversi
+// (es. NYSE:GME e BATS:GME, MIL:ENI e MIL_LS:ENI)
+function stockKey(asset) {
+  return asset.replace(/^(NASDAQ|NYSE|AMEX|BATS):/, 'US:').replace(/^MIL(_LS)?:/, 'MIL:');
+}
 function isStockAsset(asset) {
   const i = asset.indexOf(':');
   return i > 0 && Object.prototype.hasOwnProperty.call(STOCK_EXCHANGES, asset.slice(0, i));
@@ -1424,7 +1431,8 @@ app.post('/webhook', async (req, res) => {
     const stratLabel = strategy === 'STV' ? 'SUPERTREND V' : strategy;
     if (sxs && dir === 'EXIT') {
       const toClose = positions.concat(shadowPositions)
-        .filter(p => p.asset === assetUp && p.strategy === strategy);
+        .filter(p => p.strategy === strategy &&
+          (p.asset === assetUp || (strategy === 'STV' && stockKey(p.asset) === stockKey(assetUp))));
       const sl_ = strategy.toLowerCase();
       logSignal({ asset: assetUp, raw_direction: 'EXIT ' + strategy, entry: entryNum, trend_raw: trendRaw,
         outcome: toClose.length ? 'exit_' + sl_ : 'exit_' + sl_ + '_nessuna_posizione' });
