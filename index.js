@@ -1186,6 +1186,21 @@ async function checkPositions() {
       shadowPositions.splice(i, 1);
       console.log('OMBRA chiusa:', pos.asset, pos.direction,
         '->', out.result, 'P&L simulato:', out.pnlEur);
+      // Le posizioni "in prova" hanno avuto il messaggio di entrata: va
+      // notificata anche la chiusura (stop, TP o timeout), altrimenti su
+      // Telegram restano "aperte" senza spiegazione (NVDA STV, 25/11).
+      if (pos.shadowType === 'test') {
+        const lbl = pos.strategy === 'STV' ? 'SUPERTREND V' : pos.strategy === 'RSI2' ? 'RSI2' : 'PROVA';
+        const motivo = out.timeout ? 'timeout 7 giorni'
+          : out.result === 'LOSS' ? (SIGNAL_EXIT_STRATEGIES[pos.strategy] ? 'stop di emergenza' : 'stop loss')
+          : 'take profit';
+        const pct = ((pos.direction === 'LONG' ? out.closePrice - pos.entry : pos.entry - out.closePrice) / pos.entry * 100).toFixed(2);
+        const ore = Math.round((Date.now() - new Date(pos.openedAt)) / 3600000);
+        await sendTelegram('🧪 🔔 <b>' + lbl + ' — USCITA ' + pos.asset.split(':').pop() + '</b>\n' +
+          'Ingresso ' + fmtAsset(pos.entry, pos.asset) + ' → uscita ' + fmtAsset(out.closePrice, pos.asset) + ' (' + (pct >= 0 ? '+' : '') + pct + '%)\n' +
+          (out.result === 'WIN' ? '✅' : '❌') + ' P&L simulato: <b>' + (out.pnlEur >= 0 ? '+€' : '-€') + Math.abs(out.pnlEur).toFixed(2) + '</b> | durata ' + ore + 'h\n' +
+          'Motivo: ' + motivo + '.');
+      }
     } catch (e) {
       console.error('Errore check ombra:', e.message);
     }
